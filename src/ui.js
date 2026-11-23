@@ -9,7 +9,7 @@ import { stripJsonl, parseSillyTavernTimestamp } from './adapter.js';
 const PRESET_TAGS = ['主线', '高甜', '刀子', 'IF线', 'HE', 'BE', '待填坑'];
 
 // 故事线几何（与 style.css 中 .st-sbm-row 的高度保持一致）
-const RAIL = { rowHeight: 64, laneWidth: 18, inset: 20, gutter: 18, maxLane: 6, treeGap: 20 };
+const RAIL = { rowHeight: 64, laneWidth: 18, maxSpread: 90, inset: 20, gutter: 18, treeGap: 20 };
 
 const svgIcon = (body, width = 1.8) =>
   `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
@@ -37,7 +37,8 @@ function escapeHtml(str = '') {
     .replace(/'/g, '&#39;');
 }
 
-const TIMESTAMP_RE = /(\d{4})-(\d{1,2})-(\d{1,2})\s*[@_]\s*(\d{1,2})h\s*(\d{1,2})m(?:\s*\d{1,2}s)?(?:\s*\d{1,3}ms)?/i;
+const TIMESTAMP_RE =
+  /(\d{4})-(\d{1,2})-(\d{1,2})[\s@_T-]*(\d{1,2})\s*[h:.\-_]\s*(\d{1,2})(?:\s*[m:.\-_]\s*\d{1,2}(?!\d))?(?:\s*m)?(?:\s*s)?(?:\s*\d{1,3}\s*ms)?/i;
 
 /**
  * 从存档文件名中取出用户真正起的名字。
@@ -86,6 +87,43 @@ function headline(text = '') {
     out += ch;
   }
   return out.replace(/[\s。，,.；;：:、]+$/, '');
+}
+
+/** 整楼只有一对方括号的报错 / 空回复，如 [The message is empty] */
+const isPlaceholder = (text) => /^[[【(（][^\]】)）]*[\]】)）]$/.test(text);
+
+/**
+ * 找出反复出现的固定开头（预设包裹的「以下是用户的本轮输入：」之类）。
+ * 先按前 6 个字分组，再取每组的最长公共前缀；同一楼在多个存档里重复出现只算一次。
+ */
+function findBoilerplate(nodes) {
+  const groups = new Map();
+  const seen = new Set();
+  for (const node of nodes) {
+    for (const floor of node.floors) {
+      if (seen.has(floor.hash)) continue;
+      seen.add(floor.hash);
+      const text = plainText(floor.snippet);
+      if (text.length < 10) continue;
+      const key = text.slice(0, 6);
+      if (!groups.has(key)) groups.set(key, { count: 0, texts: new Set() });
+      const group = groups.get(key);
+      group.count += 1;
+      group.texts.add(text);
+    }
+  }
+  const prefixes = [];
+  for (const { count, texts } of groups.values()) {
+    if (texts.size < 5 || count < seen.size * 0.03) continue;
+    const list = [...texts];
+    let length = 0;
+    while (list.every((t) => length < t.length && t[length] === list[0][length])) length += 1;
+    // 退回到最近的标点，避免从词中间切断
+    const shared = list[0].slice(0, length);
+    const boundary = shared.search(/[\s。！？!?：:，,；;…」』”"】)）][^\s。！？!?：:，,；;…」』”"】)）]*$/) + 1;
+    prefixes.push(boundary >= 6 ? shared.slice(0, boundary).trim() : shared);
+  }
+  return prefixes.sort((a, b) => b.length - a.length);
 }
 
 /** 多条走向的开头若相同，各自从第一处不同所在的句子读起 */
@@ -169,6 +207,7 @@ export class SaveBranchManagerModal {
     this.tagEditorOpen = false;
     this.inspectorKey = null;
     this.artKey = null;
+    this.boilerplate = []; // 当前角色反复出现的固定开头
     this.autoTitles = new Map(); // `${avatar}::${chatId}` -> 未起别名时的标题
 
     this.pendingNoteSaves = new Map();
@@ -219,6 +258,7 @@ export class SaveBranchManagerModal {
    * 取这条线独有的第一句（分叉后的第一楼 / 开局后的第一次回应）
    */
   indexAutoTitles(character, graph) {
+    this.boilerplate = findBoilerplate(graph.nodes);
     const labels = new Map(
       graph.nodes.map((n) => [n.chatId, extractSaveName(n.chatId, [character.name, n.header?.character_name])])
     );
@@ -228,14 +268,26 @@ export class SaveBranchManagerModal {
     for (const node of graph.nodes) {
       const label = labels.get(node.chatId);
       const bm = node.branchMoment;
-      const opening = bm
-        ? bm.childNextSnippet || bm.anchorSnippet
-        : node.floors[1]?.snippet || node.floors[0]?.snippet || node.previewText;
       const isDistinct = label && counts.get(label) === 1;
       node.isAutoNamed = !isDistinct;
+
+      // 从这条线自己的第一楼往后找，跳过空回复和纯套话
+      const start = bm ? (bm.isCheckpointSnapshot || bm.isExactCopy ? bm.branchFloor - 1 : bm.branchFloor) : 1;
+      const candidates = [...node.floors.slice(start, start + 6), node.floors[0]].map((f) => this.gist(f?.snippet));
+      const opening = candidates.find(
+        (text) => headline(text).length >= 2 && !isPlaceholder(text) && !this.boilerplate.some((p) => text.startsWith(p))
+      ) || node.previewText;
       const title = isDistinct ? label : headline(opening) || label || fallbackSaveName(node.chatId);
       this.autoTitles.set(`${character.avatar}::${node.chatId}`, title);
     }
+  }
+
+  /** 可读正文，去掉本角色反复出现的固定开头 */
+  gist(text = '') {
+    const plain = plainText(text);
+    const prefix = this.boilerplate.find((p) => plain.startsWith(p));
+    const rest = prefix ? plain.slice(prefix.length).replace(/^[\s:：,，.。!！>)\]】」]+/, '') : plain;
+    return rest.length >= 2 ? rest : plain;
   }
 
   /** 窄屏下的导航层级：characters -> saves -> detail */
@@ -847,6 +899,10 @@ export class SaveBranchManagerModal {
     const order = graph.order || graph.nodes;
     const byId = new Map(order.map((n) => [n.chatId, n]));
 
+    // 轨道再多也各占一条：放不下时收窄间距，绝不把不同的线叠在一起
+    const lanes = graph.laneCount || 1;
+    const laneWidth = Math.min(RAIL.laneWidth, RAIL.maxSpread / Math.max(1, lanes - 1));
+
     const pos = new Map();
     let top = 0;
     order.forEach((node, index) => {
@@ -854,16 +910,15 @@ export class SaveBranchManagerModal {
       const prev = order[index - 1];
       if (prev && !node.parentId && (prev.parentId || node.childrenIds.length > 0)) top += RAIL.treeGap;
       pos.set(node.chatId, {
-        x: RAIL.inset + Math.min(node.lane || 0, RAIL.maxLane) * RAIL.laneWidth,
+        x: RAIL.inset + (node.lane || 0) * laneWidth,
         top,
         y: top + RAIL.rowHeight / 2,
       });
       top += RAIL.rowHeight;
     });
     const height = top;
-    const lanes = Math.min(graph.laneCount || 1, RAIL.maxLane + 1);
     const hasRail = order.some((n) => n.parentId); // 没有任何分叉时无需轨道
-    const railWidth = hasRail ? RAIL.inset + (lanes - 1) * RAIL.laneWidth + RAIL.gutter : 16;
+    const railWidth = hasRail ? RAIL.inset + (lanes - 1) * laneWidth + RAIL.gutter : 16;
 
     this.railLayout = { order, byId, pos };
 
@@ -877,7 +932,8 @@ export class SaveBranchManagerModal {
           ? '检查点'
           : bm?.isExactCopy
           ? '副本'
-          : plainText(node.lastFloorSnippet);
+          : this.gist(node.lastFloorSnippet);
+        const range = !bm ? '' : bm.isCheckpointSnapshot || bm.isExactCopy ? `#${bm.branchFloor}` : `${bm.branchFloor} → ${node.floorCount}`;
         return `
           <div class="st-sbm-row ${isDimmed ? 'is-dimmed' : ''}" role="option" aria-selected="${node.chatId === this.selectedChatId}" style="top:${pos.get(node.chatId).top}px;padding-left:${railWidth}px" data-save-avatar="${escapeHtml(owner.avatar)}" data-save-id="${escapeHtml(node.chatId)}">
             <div class="st-sbm-row-text">
@@ -890,7 +946,7 @@ export class SaveBranchManagerModal {
                     : `<span class="st-sbm-row-time">${escapeHtml(formatRelativeTime(node.lastModified))}</span>`
                 }
               </div>
-              <div class="st-sbm-row-sub">${bm ? `<b>#${bm.branchFloor}</b>` : ''}${escapeHtml(snippet)}</div>
+              <div class="st-sbm-row-sub">${range ? `<b>${range}</b>` : ''}${escapeHtml(snippet)}</div>
             </div>
           </div>`;
       })
@@ -919,7 +975,7 @@ export class SaveBranchManagerModal {
       const line =
         from.x === to.x
           ? `V${to.y}`
-          : `V${to.y - bend}C${from.x} ${to.y - 4} ${to.x - 6} ${to.y} ${to.x} ${to.y}`;
+          : `V${to.y - bend}C${from.x} ${to.y - 4} ${to.x - (to.x - from.x) / 3} ${to.y} ${to.x} ${to.y}`;
       return (moveTo ? `M${from.x} ${from.y}` : '') + line;
     };
     const pathTo = (id) => {
@@ -999,7 +1055,7 @@ export class SaveBranchManagerModal {
       if (sib.branchMoment?.branchFloor !== bm.branchFloor || !sib.branchMoment.childNextSnippet) continue;
       paths.push({ node: sib, text: sib.branchMoment.childNextSnippet });
     }
-    trimSharedOpening(paths.map((p) => plainText(p.text))).forEach((text, i) => {
+    trimSharedOpening(paths.map((p) => this.gist(p.text))).forEach((text, i) => {
       paths[i].text = text;
     });
 
@@ -1030,7 +1086,7 @@ export class SaveBranchManagerModal {
       <section class="st-sbm-section">
         <header><h3>${heading} <em>#${bm.branchFloor}</em></h3>${parentLink}</header>
         <div class="st-sbm-fork">
-          <div class="st-sbm-fork-anchor"><span>${escapeHtml(plainText(bm.anchorSnippet) || '—')}</span></div>
+          <div class="st-sbm-fork-anchor"><span>${escapeHtml(this.gist(bm.anchorSnippet) || '—')}</span></div>
           ${
             columns.length
               ? `<svg class="st-sbm-fork-lines" viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden="true">${lines}</svg>
@@ -1046,7 +1102,7 @@ export class SaveBranchManagerModal {
 
   bubblesHtml(floors) {
     return `<div class="st-sbm-chat">${floors
-      .map((f) => `<div class="st-sbm-bubble ${f.isUser ? 'is-user' : ''}"><span>${escapeHtml(plainText(f.snippet))}</span></div>`)
+      .map((f) => `<div class="st-sbm-bubble ${f.isUser ? 'is-user' : ''}"><span>${escapeHtml(this.gist(f.snippet))}</span></div>`)
       .join('')}</div>`;
   }
 

@@ -566,7 +566,7 @@
 }
 
 .st-sbm-row-sub b {
-  margin-right: 6px;
+  margin-right: 8px;
   color: var(--sbm-text-3);
   font-weight: 500;
   font-variant-numeric: tabular-nums;

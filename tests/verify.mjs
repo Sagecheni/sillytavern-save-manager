@@ -45,6 +45,38 @@ assert.equal(trueEnd.branchMoment?.branchFloor, 10, '真结局应在第 10 楼�
   }
 }
 
+// 1B-2. 反复「倒回某楼再开分支」：main_chat 指向点按钮时所在的文件，不得据此串成长链
+{
+  let uid = 0;
+  const story = (from, count) => [...from, ...Array.from({ length: count }, (_, i) => ({ floor: from.length + i + 1, name: '', isUser: false, hash: `c${++uid}`, snippet: '' }))];
+  const save = (chatId, floors, mainChat = '', hour = 0) => ({
+    chatId,
+    floors,
+    lastModified: `2026-10-0${1 + Math.floor(hour / 24)}T${String(hour % 24).padStart(2, '0')}:00:00Z`,
+    header: { create_date: `2026-10-0${1 + Math.floor(hour / 24)}T${String(hour % 24).padStart(2, '0')}:00:00Z`, chat_metadata: mainChat ? { main_chat: mainChat } : {} },
+  });
+  const a = story([], 20);
+  const b = story(a.slice(0, 10), 30); // 从 a 的 10 楼分出，走到 40
+  const c = story(b.slice(0, 30), 2); // 从 b 的 30 楼分出，失败
+  const d = story(c.slice(0, 30), 3); // 在 c 里回到 30 楼重来，又失败
+  const e = story(d.slice(0, 30), 20); // 在 d 里回到 30 楼重来，走到 50
+  const f = story(e.slice(0, 5), 3); // 在 e 里一路翻回 5 楼另开一条
+  const g = story(e.slice(0, 25), 40); // 在 e 里翻回 25 楼，走到 65
+  const graph = buildCharacterBranchGraph({ avatar: 'retry' }, [
+    save('a', a, '', 0), save('b', b, 'a', 1), save('c', c, 'b', 2), save('d', d, 'c', 3),
+    save('e', e, 'd', 4), save('f', f, 'e', 5), save('g', g, 'e', 6),
+  ]);
+  const by = new Map(graph.nodes.map((n) => [n.chatId, n]));
+  assert.deepEqual(['b', 'c', 'd', 'e', 'f', 'g'].map((id) => by.get(id).parentId), ['a', 'b', 'b', 'b', 'a', 'b'], '应归到真正拥有分叉楼层的存档');
+  assert.deepEqual(['c', 'd', 'e', 'f', 'g'].map((id) => by.get(id).branchMoment.branchFloor), [30, 30, 30, 5, 25]);
+  for (const n of graph.nodes) {
+    const parent = by.get(n.parentId);
+    if (parent?.branchMoment) assert.ok(n.branchMoment.branchFloor > parent.branchMoment.branchFloor, '沿任意一条线，分叉楼层只增不减');
+  }
+  assert.deepEqual(['a', 'b', 'g'].map((id) => by.get(id).lane), [0, 0, 0], '走得最远的一条应直行');
+  assert.deepEqual(['c', 'd', 'e', 'f'].map((id) => by.get(id).lane), [1, 1, 1, 1], '其余支线只右移一格，不得逐级右移');
+}
+
 // 1C. 未命名存档的标题：剥除酒馆自动文件名，取这条线独有的开头；用户起的名字优先
 {
   const floor = (i, snippet, hash = snippet) => ({ floor: i, name: '', isUser: i % 2 === 0, hash, snippet });
@@ -66,6 +98,18 @@ assert.equal(trueEnd.branchMoment?.branchFloor, 10, '真结局应在第 10 楼�
   assert.equal(titleModal.saveTitle('s.png', main), '等等。你握住她的手腕');
   assert.equal(titleModal.saveTitle('s.png', 'Branch #1 - 2026-11-02@10h00m00s204ms'), '你转身推开了那扇门');
   assert.equal(titleModal.saveTitle('s.png', '2026-11-03@10h00m00s_雨夜驿站'), '雨夜驿站');
+
+  // 预设包裹的固定开头与空回复不得成为标题
+  const acts = ['推门走进大宅', '把密信烧掉', '先去找掌柜', '穿过回廊', '绕到后院', '沿河往下游走'];
+  const wrapped = acts.map((act, i) => floor(i + 2, `以下是用户的本轮输入： ${act}，然后离开`));
+  const base = [floor(1, '开场白'), ...wrapped.slice(0, 5)];
+  const wrappedGraph = buildCharacterBranchGraph({ avatar: 'w.png', name: 'W' }, [
+    digest('W - 2026-11-01@10h00m00s', base),
+    digest('Branch #1 - 2026-11-02@10h00m00s', [...base.slice(0, 4), floor(5, '[The message is empty]'), wrapped[5]], 'W - 2026-11-01@10h00m00s'),
+  ]);
+  titleModal.indexAutoTitles({ avatar: 'w.png', name: 'W' }, wrappedGraph);
+  assert.equal(titleModal.saveTitle('w.png', 'W - 2026-11-01@10h00m00s'), '推门走进大宅');
+  assert.equal(titleModal.saveTitle('w.png', 'Branch #1 - 2026-11-02@10h00m00s'), '沿河往下游走');
 }
 
 // 2. 验证林夏“无独立检查点、两份同长存档中途分道扬镳”识别
@@ -771,7 +815,8 @@ assert.equal(jsonlParsed.length, 2, '应兼容逐行 JSONL 文本格式');
     const i = graph.nodes.find((n) => n.chatId === 'inner_cp_2f');
     assert.equal(m.parentId, null, '任意顺序下主线都必须是根节点');
     assert.equal(o.parentId, 'main_5f', '外层检查点必须挂在主线下');
-    assert.equal(i.parentId, 'outer_cp_4f', '内层检查点必须挂在外层检查点下');
+    // 外层检查点在 4 楼才离开主线，内层的前 2 楼属于主线本身，应上移到主线，保证分叉楼层只增不减
+    assert.equal(i.parentId, 'main_5f', '内层检查点必须挂在真正拥有第 2 楼的主线下');
   }
 }
 

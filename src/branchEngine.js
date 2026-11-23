@@ -114,6 +114,34 @@ function isBetterParentCandidate(candidate, lcp, isExplicit, bestParent, bestLcp
 }
 
 /**
+ * 将每个存档上移到真正拥有其分叉楼层的祖先之下
+ */
+function settleForkOwners(orderedNodes, nodeById) {
+  const settled = new Set();
+
+  const settle = (node) => {
+    if (settled.has(node.chatId)) return;
+    settled.add(node.chatId);
+    const parent = nodeById.get(node.parentId);
+    if (!parent) return;
+    settle(parent); // 先定好父存档自身的位置，再判断子存档
+
+    for (let owner = parent; owner.parentId; owner = nodeById.get(owner.parentId)) {
+      const lcp = node._lcpWithParent;
+      if (lcp > owner._lcpWithParent) break;
+      // 父存档整份都是本存档的前缀：确实是从它的末尾接着写，保留原关系
+      if (owner.floors.length === lcp && node.floors.length > lcp) break;
+
+      const upper = nodeById.get(owner.parentId);
+      node.parentId = upper.chatId;
+      node._lcpWithParent = computeLcpFloors(upper.floors, node.floors);
+    }
+  };
+
+  orderedNodes.forEach(settle);
+}
+
+/**
  * 为某个角色的所有存档构建分支森林与节点详情
  */
 export function buildCharacterBranchGraph(character, rawDigests = []) {
@@ -135,7 +163,6 @@ export function buildCharacterBranchGraph(character, rawDigests = []) {
       branchMoment: null,
       row: 0,
       lane: 0,
-      isContinuation: false,
     };
   });
 
@@ -217,6 +244,11 @@ export function buildCharacterBranchGraph(character, rawDigests = []) {
     }
   }
 
+  // 第二步（补）：main_chat 记录的是「点分支按钮时所在的文件」，不是剧情真正岔开的位置。
+  // 从某分支倒回更早的楼层再开分支时，共同剧情其实属于更上游的存档，需上移到那里，
+  // 从而保证沿任意一条线往下，分叉楼层只增不减。
+  settleForkOwners(orderedNodes, nodeById);
+
   // 第三步：填充 childrenIds 与详尽的 branchMoment（分叉时刻对比信息）
   for (const node of nodes) {
     if (!node.parentId) continue;
@@ -279,20 +311,29 @@ export function buildCharacterBranchGraph(character, rawDigests = []) {
 
 /**
  * 故事线布局：每个存档占一行 (row) 与一条轨道 (lane)
- * - 父存档恰好停在分叉楼层时，最近游玩的那个子存档视为延续，留在父轨道直行
- * - 其余子存档向右开出新轨道，并排在延续之前，因此轨道之间永不交叉
+ * - 走得最远的那条线视为主干，沿同一轨道直行；其余向右开出新轨道
+ * - 支线排在主干的下一站之前，因此轨道之间永不交叉
  */
 function layoutStoryline(roots, nodeById) {
   const order = [];
   let laneCount = 0;
 
-  const latestTime = new Map();
+  const latestTime = new Map(); // 子树中最近的游玩时间
+  const furthest = new Map(); // 子树中走到的最远楼层
   const measure = (node) => {
     let latest = parseSillyTavernTimestamp(node.lastModified) || 0;
-    for (const id of node.childrenIds) latest = Math.max(latest, measure(nodeById.get(id)));
+    let floors = node.floors.length;
+    for (const id of node.childrenIds) {
+      const child = nodeById.get(id);
+      measure(child);
+      latest = Math.max(latest, latestTime.get(id));
+      floors = Math.max(floors, furthest.get(id));
+    }
     latestTime.set(node.chatId, latest);
-    return latest;
+    furthest.set(node.chatId, floors);
   };
+  const isBetterTrunk = (a, b) =>
+    furthest.get(a.chatId) - furthest.get(b.chatId) || latestTime.get(a.chatId) - latestTime.get(b.chatId);
 
   const place = (node, lane) => {
     node.row = order.length;
@@ -301,17 +342,15 @@ function layoutStoryline(roots, nodeById) {
     laneCount = Math.max(laneCount, lane + 1);
 
     const children = node.childrenIds.map((id) => nodeById.get(id));
-    const continuation = children
-      .filter((c) => c.branchMoment?.branchFloor === node.floors.length)
-      .reduce((best, c) => (!best || latestTime.get(c.chatId) > latestTime.get(best.chatId) ? c : best), null);
+    // 子线走得比本存档更远，才算主干的下一站；否则本存档自己就是这条线的终点
+    const trunk = children
+      .filter((c) => furthest.get(c.chatId) > node.floors.length)
+      .reduce((best, c) => (!best || isBetterTrunk(c, best) > 0 ? c : best), null);
 
     for (const child of children) {
-      if (child !== continuation) place(child, lane + 1);
+      if (child !== trunk) place(child, lane + 1);
     }
-    if (continuation) {
-      continuation.isContinuation = true;
-      place(continuation, lane);
-    }
+    if (trunk) place(trunk, lane);
   };
 
   // 最近游玩过的剧情树排在最前
