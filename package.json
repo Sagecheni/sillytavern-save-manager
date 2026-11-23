@@ -1,0 +1,10 @@
+{
+  "name": "sillytavern-save-manager",
+  "version": "0.1.0",
+  "description": "SillyTavern 全局存档与剧情分支树管理器 UI 扩展",
+  "type": "module",
+  "scripts": {
+    "test": "node ./tests/verify.mjs",
+    "preview": "python3 -m http.server 8123"
+  }
+}

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>酒馆全局存档与分支管理器 · 本地模拟调试台</title>
+  <link rel="stylesheet" href="./style.css" />
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #0e1017;
+      color: #e6eaf3;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .mock-st-header {
+      height: 54px;
+      background: #171a26;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .mock-st-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .mock-st-pill {
+      font-size: 11.5px;
+      padding: 2px 9px;
+      border-radius: 999px;
+      background: rgba(46, 196, 182, 0.16);
+      color: #64dfdf;
+    }
+
+    .mock-chat-shell {
+      width: min(860px, 92vw);
+      margin: 28px auto;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .mock-banner {
+      background: #1a1e2e;
+      border: 1px solid rgba(124, 108, 246, 0.35);
+      border-radius: 12px;
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .mock-msg {
+      background: #181b28;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 12px;
+      padding: 14px 16px;
+      line-height: 1.65;
+      font-size: 14px;
+    }
+
+    .mock-msg.is-user {
+      background: #1f2437;
+      border-color: rgba(124, 108, 246, 0.25);
+    }
+
+    .mock-msg-meta {
+      font-size: 12px;
+      color: #8b95b0;
+      margin-bottom: 6px;
+      display: flex;
+      justify-content: space-between;
+    }
+  </style>
+</head>
+<body>
+  <header class="mock-st-header">
+    <div class="mock-st-title">
+      <span>🍺 SillyTavern 模拟宿主环境</span>
+      <span class="mock-st-pill" id="mockActiveIndicator">加载中...</span>
+    </div>
+    <button type="button" class="st-sbm-btn st-sbm-btn-primary" id="openManagerBtn">
+      🌿 打开全局存档与分支大厅
+    </button>
+  </header>
+
+  <div class="mock-chat-shell">
+    <div class="mock-banner">
+      <div>
+        <div style="font-weight:700; font-size:14.5px; margin-bottom:4px;">本地离线调试预览台</div>
+        <div style="font-size:12.5px; color:#a2abc2;">
+          当前加载了 4 张测试角色卡与 12 个跨分支存档（含多层检查点与平行开局）。在弹窗中点击「🚀 切换到此存档继续游玩」可实时改变下方模拟酒馆当前会话。
+        </div>
+      </div>
+      <button type="button" class="st-sbm-btn" id="openManagerBtn2">立即查看分支树</button>
+    </div>
+
+    <div id="mockChatMessages" style="display:flex; flex-direction:column; gap:10px;"></div>
+  </div>
+
+  <script type="module">
+    import { adapter, modal } from './index.js';
+
+    function renderMockHostChat() {
+      const state = adapter.getMockCurrentChatLines();
+      const indicator = document.getElementById('mockActiveIndicator');
+      const container = document.getElementById('mockChatMessages');
+
+      if (!state.character) return;
+      indicator.textContent = `当前角色：${state.character.name} ｜ 存档：${state.chatId}`;
+
+      container.innerHTML = state.lines
+        .map(
+          (m, idx) => `
+          <div class="mock-msg ${m.is_user ? 'is-user' : ''}">
+            <div class="mock-msg-meta">
+              <strong>#${idx + 1} ${m.name}</strong>
+              <span>${m.send_date || ''}</span>
+            </div>
+            <div>${m.mes}</div>
+          </div>
+        `
+        )
+        .join('');
+    }
+
+    adapter.onMockStateChange(() => renderMockHostChat());
+    renderMockHostChat();
+
+    document.getElementById('openManagerBtn').addEventListener('click', () => modal.open());
+    document.getElementById('openManagerBtn2').addEventListener('click', () => modal.open());
+
+    // 初次进入自动打开全局存档大厅方便预览
+    modal.open();
+  </script>
+</body>
+</html>
