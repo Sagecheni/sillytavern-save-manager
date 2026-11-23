@@ -27,6 +27,47 @@ assert.ok(trueEnd, '应找到星砂拓印真结局节点');
 assert.ok(trueEnd.parentId?.includes('酒窖暗道探索'), '真结局的父分支应为酒窖暗道探索');
 assert.equal(trueEnd.branchMoment?.branchFloor, 10, '真结局应在第 10 楼处分叉');
 
+// 1B. 故事线布局：延续直行、分叉右移、父存档永远在子存档之前
+{
+  const at = (key) => elainaGraph.nodes.find((n) => n.chatId.includes(key));
+  assert.equal(elainaGraph.order.length, 6, '故事线应包含全部存档');
+  assert.equal(elainaGraph.laneCount, 2, '伊蕾娜故事线应只占 2 条轨道');
+  assert.deepEqual(
+    ['初入钟塔主干', '酒窖暗道探索', '星砂拓印真结局'].map((k) => at(k).lane),
+    [0, 0, 0],
+    '正在游玩的剧情应沿同一轨道直行'
+  );
+  assert.equal(at('强夺星砂').lane, 1, '分叉剧情应开出新轨道');
+  assert.equal(at('午夜正面硬闯').lane, 1, '分叉剧情应开出新轨道');
+  for (const n of elainaGraph.nodes) {
+    assert.equal(elainaGraph.order[n.row], n, 'row 应与故事线顺序一致');
+    if (n.parentId) assert.ok(elainaGraph.nodes.find((p) => p.chatId === n.parentId).row < n.row, '父存档应排在子存档之前');
+  }
+}
+
+// 1C. 未命名存档的标题：剥除酒馆自动文件名，取这条线独有的开头；用户起的名字优先
+{
+  const floor = (i, snippet, hash = snippet) => ({ floor: i, name: '', isUser: i % 2 === 0, hash, snippet });
+  const trunk = [floor(1, '开场白'), floor(2, '“等等。”你握住她的手腕，没有松开。')];
+  const main = 'Seraphina - 2026-11-01@10h00m00s';
+  const digest = (chatId, floors, mainChat = '') => ({
+    chatId,
+    floors,
+    header: { chat_metadata: mainChat ? { main_chat: mainChat } : {} },
+  });
+  const ch = { avatar: 's.png', name: 'Seraphina' };
+  const graph = buildCharacterBranchGraph(ch, [
+    digest(main, [...trunk, floor(3, '主线')]),
+    digest('Branch #1 - 2026-11-02@10h00m00s204ms', [...trunk, floor(3, '*你转身推开了那扇门*，风灌进来')], main),
+    digest('2026-11-03@10h00m00s_雨夜驿站', [floor(1, '开场白'), floor(2, '别的')]),
+  ]);
+  const titleModal = new SaveBranchManagerModal(new SaveManagerAdapter());
+  titleModal.indexAutoTitles(ch, graph);
+  assert.equal(titleModal.saveTitle('s.png', main), '等等。你握住她的手腕');
+  assert.equal(titleModal.saveTitle('s.png', 'Branch #1 - 2026-11-02@10h00m00s204ms'), '你转身推开了那扇门');
+  assert.equal(titleModal.saveTitle('s.png', '2026-11-03@10h00m00s_雨夜驿站'), '雨夜驿站');
+}
+
 // 2. 验证林夏“无独立检查点、两份同长存档中途分道扬镳”识别
 const linxia = overview.find((c) => c.avatar === 'linxia_summer.png');
 const linxiaDigests = await adapter.getCharacterChatDigests(linxia, linxia.saves);
@@ -1021,7 +1062,7 @@ assert.equal(jsonlParsed.length, 2, '应兼容逐行 JSONL 文本格式');
     };
     editModal.selectedChatId = 'save_1';
     editModal.renderSidebar();
-    editModal.renderTreeStage();
+    editModal.renderSaves();
     editModal.renderInspector();
 
     const sidebarEl = editModal.backdropEl.querySelector('[data-role="sidebar-list"]');

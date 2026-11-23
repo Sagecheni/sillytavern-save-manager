@@ -1,33 +1,31 @@
 /**
- * 全局存档与分支大厅 UI 控制器
- * 提供：
- * - 左栏：全角色检索过滤 + 全局星标书签视图
- * - 中栏：支持拖拽平移与滚轮缩放的剧情分支树画布 + 时间线列表双视图
- * - 右栏：分叉时刻三方对比、自定义标题、标签快捷组、自动保存备注、跨角色一键跳转
+ * 存档与分支管理器 UI 控制器
+ * 三栏：角色 · 故事线 · 阅读页
  */
 
-import { buildCharacterBranchGraph, LAYOUT_CONFIG } from './branchEngine.js';
+import { buildCharacterBranchGraph } from './branchEngine.js';
 import { stripJsonl, parseSillyTavernTimestamp } from './adapter.js';
 
 const PRESET_TAGS = ['主线', '高甜', '刀子', 'IF线', 'HE', 'BE', '待填坑'];
 
+// 故事线几何（与 style.css 中 .st-sbm-row 的高度保持一致）
+const RAIL = { rowHeight: 64, laneWidth: 18, inset: 20, gutter: 18, maxLane: 6, treeGap: 20 };
+
+const svgIcon = (body, width = 1.8) =>
+  `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+
+const STAR_PATH =
+  '<path d="M12 3.2l2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.8-5.4 2.8 1-6L3.2 9.6l6.1-.9z"/>';
+
 const ICONS = {
-  branch: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>`,
-  branchLg: `<svg class="st-sbm-icon st-sbm-icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>`,
-  search: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`,
-  refresh: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>`,
-  close: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
-  users: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`,
-  star: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
-  starFill: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
-  list: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>`,
-  play: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>`,
-  check: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`,
-  pin: `<svg class="st-sbm-icon st-sbm-icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>`,
-  seed: `<svg class="st-sbm-icon st-sbm-icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/></svg>`,
-  tag: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>`,
-  note: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`,
-  chat: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
+  search: svgIcon('<circle cx="10.5" cy="10.5" r="6.5"/><path d="M20 20l-4.8-4.8"/>', 2),
+  close: svgIcon('<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>', 2.1),
+  back: svgIcon('<path d="M14.5 5l-7 7 7 7"/>', 2.2),
+  chevron: svgIcon('<path d="M9.5 6l6 6-6 6"/>', 2.2),
+  plus: svgIcon('<path d="M12 5.5v13M5.5 12h13"/>', 2.1),
+  check: svgIcon('<path d="M5 12.5l4.5 4.5L19 7.5"/>', 2.3),
+  star: svgIcon(STAR_PATH),
+  starFill: svgIcon(STAR_PATH).replace('fill="none"', 'fill="currentColor"'),
 };
 
 function escapeHtml(str = '') {
@@ -39,29 +37,123 @@ function escapeHtml(str = '') {
     .replace(/'/g, '&#39;');
 }
 
-function prettifySaveName(chatId = '') {
-  const clean = stripJsonl(chatId);
-  // 将 2026-11-23@18h20m12s_标题 简化为更易读的名称
-  const match = clean.match(/^(\d{4}-\d{2}-\d{2})[@_](\d{2})h(\d{2})m(?:\d{2}s)?[_-]?(.*)$/i);
-  if (match) {
-    const [, date, hh, mm, suffix] = match;
-    if (suffix && suffix.trim()) return suffix.trim();
-    return `${date.slice(5)} ${hh}:${mm} 存档`;
+const TIMESTAMP_RE = /(\d{4})-(\d{1,2})-(\d{1,2})\s*[@_]\s*(\d{1,2})h\s*(\d{1,2})m(?:\s*\d{1,2}s)?(?:\s*\d{1,3}ms)?/i;
+
+/**
+ * 从存档文件名中取出用户真正起的名字。
+ * 酒馆自动生成的部分（角色名、时间戳、Branch / Checkpoint 编号）一律剥除，剥完为空即视为未命名。
+ */
+function extractSaveName(chatId = '', characterNames = []) {
+  let label = stripJsonl(chatId).replace(TIMESTAMP_RE, ' ');
+  for (const name of characterNames) {
+    if (name && label.startsWith(name) && /^(\s*[-_]|\s*$)/.test(label.slice(name.length))) {
+      label = label.slice(name.length);
+      break;
+    }
   }
-  return clean || '未命名存档';
+  return label
+    .replace(/\b(?:Branch|Checkpoint)\s*#?\d*/gi, ' ')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s-]+|[\s-]+$/g, '');
 }
 
-function formatShortTime(tsOrStr) {
-  if (!tsOrStr) return '';
-  const ts = parseSillyTavernTimestamp(tsOrStr);
+function fallbackSaveName(chatId = '') {
+  const label = extractSaveName(chatId);
+  if (label) return label;
+  const [, , month, day, hh, mm] = stripJsonl(chatId).match(TIMESTAMP_RE) || [];
+  if (month) return `${Number(month)}月${Number(day)}日 ${hh.padStart(2, '0')}:${mm}`;
+  return stripJsonl(chatId) || '未命名';
+}
+
+/** 去掉 Markdown 记号，只留可读的正文 */
+function plainText(text = '') {
+  return String(text)
+    .replace(/[*_~`#>|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** 取开头的短句作标题，太短的感叹会连到下一句；宽度按中文 1、西文 0.5 计 */
+function headline(text = '') {
+  let width = 0;
+  let out = '';
+  const source = plainText(text).replace(/["“”「」『』]/g, '').replace(/^[\s'‘’…—-]+/, '');
+  for (const ch of source) {
+    if (width >= 6 && /[。！？!?；;，,：:、.…]/.test(ch)) break;
+    width += ch.charCodeAt(0) > 0xff ? 1 : 0.5;
+    if (width > 18) return `${out.trim()}…`;
+    out += ch;
+  }
+  return out.replace(/[\s。，,.；;：:、]+$/, '');
+}
+
+/** 多条走向的开头若相同，各自从第一处不同所在的句子读起 */
+function trimSharedOpening(texts) {
+  if (texts.length < 2) return texts;
+  let shared = 0;
+  while (texts.every((t) => shared < t.length && t[shared] === texts[0][shared])) shared += 1;
+  if (shared < 12 || texts.some((t) => shared >= t.length)) return texts;
+  const cut = Math.max(...['。', '！', '？', '，', '.', ',', ' '].map((p) => texts[0].lastIndexOf(p, shared - 1))) + 1;
+  return cut > 0 ? texts.map((t) => `…${t.slice(cut).trim()}`) : texts;
+}
+
+function clockText(d) {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** 列表用短时间：今天显示时刻，往前依次为昨天、月日、年月日 */
+function formatRelativeTime(input) {
+  const ts = parseSillyTavernTimestamp(input);
   if (!ts || Number.isNaN(ts)) return '';
   const d = new Date(ts);
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  const hh = String(d.getHours()).padStart(2, '0');
-  const min = String(d.getMinutes()).padStart(2, '0');
-  return `${mm}-${dd} ${hh}:${min}`;
+  const now = new Date();
+  const dayStart = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((dayStart(now) - dayStart(d)) / 86_400_000);
+  if (days === 0) return clockText(d);
+  if (days === 1) return '昨天';
+  if (d.getFullYear() === now.getFullYear()) return `${d.getMonth() + 1}月${d.getDate()}日`;
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
 }
+
+function formatFullTime(input) {
+  const ts = parseSillyTavernTimestamp(input);
+  if (!ts || Number.isNaN(ts)) return '';
+  const d = new Date(ts);
+  const year = d.getFullYear() === new Date().getFullYear() ? '' : `${d.getFullYear()}年`;
+  return `${year}${d.getMonth() + 1}月${d.getDate()}日 ${clockText(d)}`;
+}
+
+/** 读取酒馆主题正文颜色：正文为深色说明宿主是浅色主题 */
+function detectHostTheme() {
+  try {
+    const raw = getComputedStyle(document.documentElement).getPropertyValue('--SmartThemeBodyColor').trim();
+    if (!raw) return 'dark';
+    const probe = document.createElement('span');
+    probe.style.color = raw;
+    document.body.appendChild(probe);
+    const rgb = getComputedStyle(probe).color.match(/[\d.]+/g)?.map(Number) || [];
+    probe.remove();
+    if (rgb.length < 3) return 'dark';
+    const luminance = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+    return luminance < 110 ? 'light' : 'dark';
+  } catch {
+    return 'dark';
+  }
+}
+
+function fitTextarea(el) {
+  if (!el?.style) return;
+  el.style.height = 'auto';
+  if (el.scrollHeight) el.style.height = `${el.scrollHeight}px`;
+}
+
+const prefersReducedMotion = () => Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+
+const spinnerHtml = '<div class="st-sbm-empty"><span class="st-sbm-spinner"></span></div>';
+const failureHtml = (err) =>
+  `<div class="st-sbm-empty"><div>${escapeHtml(err?.message || String(err))}<button type="button" class="st-sbm-link" data-action="retry">重试</button></div></div>`;
+const emptyHtml = (text) => `<div class="st-sbm-empty">${escapeHtml(text)}</div>`;
 
 export class SaveBranchManagerModal {
   constructor(adapter) {
@@ -72,19 +164,12 @@ export class SaveBranchManagerModal {
     this.currentGraph = null;
     this.selectedChatId = null;
 
-    // 视图与筛选状态
-    this.sidebarTab = 'characters'; // 'characters' | 'bookmarks'
-    this.charFilter = 'all'; // 'all' | 'multi' | 'starred'
+    this.library = 'character'; // 'character' | 'starred'
     this.searchQuery = '';
-    this.canvasMode = 'tree'; // 'tree' | 'list'
-
-    // 画布平移与缩放状态
-    this.scale = 1;
-    this.panX = 24;
-    this.panY = 24;
-    this.isPanning = false;
-    this.panStartX = 0;
-    this.panStartY = 0;
+    this.tagEditorOpen = false;
+    this.inspectorKey = null;
+    this.artKey = null;
+    this.autoTitles = new Map(); // `${avatar}::${chatId}` -> 未起别名时的标题
 
     this.pendingNoteSaves = new Map();
     this.pendingTitleSave = null;
@@ -95,6 +180,82 @@ export class SaveBranchManagerModal {
     this.refreshRequestSeq = 0;
   }
 
+  /* ---------------------------------------------------------------------- *
+   * 辅助
+   * ---------------------------------------------------------------------- */
+
+  role(name) {
+    return this.backdropEl.querySelector(`[data-role="${name}"]`);
+  }
+
+  /** 当前分支图；若它不属于当前角色（异步切换中）则视为不存在 */
+  get activeGraph() {
+    const graph = this.currentGraph;
+    if (!graph || !this.currentCharacter) return null;
+    if (graph.characterAvatar && graph.characterAvatar !== this.currentCharacter.avatar) return null;
+    return graph;
+  }
+
+  saveTitle(avatar, chatId) {
+    const cleanId = stripJsonl(chatId);
+    return (
+      this.adapter.getSaveMeta(avatar, cleanId).customTitle ||
+      this.autoTitles.get(`${avatar}::${cleanId}`) ||
+      this.summaryTitle(avatar, cleanId)
+    );
+  }
+
+  /** 尚未读取过楼层时（如星标列表），用轻量摘要里的最后一句顶替 */
+  summaryTitle(avatar, cleanId) {
+    const ch = this.overviewList.find((c) => c.avatar === avatar);
+    const label = extractSaveName(cleanId, [ch?.name]);
+    if (label) return label;
+    const save = ch?.saves?.find((s) => stripJsonl(s.chatId) === cleanId);
+    return headline(save?.previewText) || fallbackSaveName(cleanId);
+  }
+
+  /**
+   * 为整张分支图生成标题：有名字用名字；没有名字，或名字与其他存档雷同无法区分时，
+   * 取这条线独有的第一句（分叉后的第一楼 / 开局后的第一次回应）
+   */
+  indexAutoTitles(character, graph) {
+    const labels = new Map(
+      graph.nodes.map((n) => [n.chatId, extractSaveName(n.chatId, [character.name, n.header?.character_name])])
+    );
+    const counts = new Map();
+    for (const label of labels.values()) counts.set(label, (counts.get(label) || 0) + 1);
+
+    for (const node of graph.nodes) {
+      const label = labels.get(node.chatId);
+      const bm = node.branchMoment;
+      const opening = bm
+        ? bm.childNextSnippet || bm.anchorSnippet
+        : node.floors[1]?.snippet || node.floors[0]?.snippet || node.previewText;
+      const isDistinct = label && counts.get(label) === 1;
+      node.isAutoNamed = !isDistinct;
+      const title = isDistinct ? label : headline(opening) || label || fallbackSaveName(node.chatId);
+      this.autoTitles.set(`${character.avatar}::${node.chatId}`, title);
+    }
+  }
+
+  /** 窄屏下的导航层级：characters -> saves -> detail */
+  setPane(pane) {
+    const depth = ['characters', 'saves', 'detail'];
+    this.backdropEl.dataset.nav = depth.indexOf(pane) < depth.indexOf(this.backdropEl.dataset.pane) ? 'pop' : 'push';
+    this.backdropEl.dataset.pane = pane;
+    this.fitInspectorFields();
+  }
+
+  /** 阅读页隐藏时量不到高度，切换层级或窗口尺寸变化后需重新量 */
+  fitInspectorFields() {
+    fitTextarea(this.role('custom-title'));
+    fitTextarea(this.role('note-input'));
+  }
+
+  /* ---------------------------------------------------------------------- *
+   * 标题与备注的延迟落盘
+   * ---------------------------------------------------------------------- */
+
   scheduleSearchRefresh() {
     if (!this.searchQuery) return;
     clearTimeout(this.searchRefreshTimer);
@@ -102,50 +263,22 @@ export class SaveBranchManagerModal {
       this.searchRefreshTimer = null;
       if (!this.backdropEl || this.backdropEl.hidden) return;
       this.renderSidebar();
-      if (this.currentGraph && this.currentCharacter && this.currentGraph.characterAvatar === this.currentCharacter.avatar) {
-        this.renderCenterView();
-      }
+      this.renderSaves();
     }, 0);
   }
 
+  /** 仅就地更新文本，绝不重建交互容器 DOM，避免 blur/change 吞掉用户的第一次 click */
   patchSaveDisplayInPlace(avatar, chatId) {
     if (!this.backdropEl) return;
     const cleanId = stripJsonl(chatId);
-    const meta = this.adapter.getSaveMeta(avatar, cleanId);
-    const displayTitle = meta.customTitle || prettifySaveName(cleanId);
-
-    // 仅就地更新文本与标记，绝不重建交互容器 DOM，避免 blur/change 吞掉用户的第一次 click
-    const sidebarList = this.backdropEl.querySelector('[data-role="sidebar-list"]');
-    if (sidebarList) {
-      sidebarList.querySelectorAll('[data-bookmark-avatar]').forEach((item) => {
-        if (item.dataset?.bookmarkAvatar === avatar && stripJsonl(item.dataset?.bookmarkChat || '') === cleanId) {
-          const titleEl = item.querySelector?.('[data-role="bookmark-title"]');
-          if (titleEl) titleEl.textContent = `★ ${displayTitle}`;
-        }
+    const title = this.saveTitle(avatar, cleanId);
+    this.role('stage')
+      ?.querySelectorAll('[data-save-id]')
+      .forEach((row) => {
+        if (row.dataset.saveAvatar !== avatar || stripJsonl(row.dataset.saveId) !== cleanId) return;
+        const titleEl = row.querySelector('[data-role="row-title"]');
+        if (titleEl) titleEl.textContent = title;
       });
-    }
-
-    if (this.currentCharacter?.avatar !== avatar) return;
-
-    const stage = this.backdropEl.querySelector('[data-role="stage"]');
-    if (stage) {
-      stage.querySelectorAll('[data-node-id]').forEach((card) => {
-        if (stripJsonl(card.dataset?.nodeId || '') !== cleanId) return;
-        const titleEl = card.querySelector?.('[data-role="node-title"]');
-        if (titleEl) titleEl.textContent = displayTitle;
-        const noteEl = card.querySelector?.('[data-role="node-note-icon"]');
-        if (noteEl) noteEl.textContent = meta.note ? '📝 ' : '';
-      });
-    }
-
-    const listView = this.backdropEl.querySelector('[data-role="list-view"]');
-    if (listView) {
-      listView.querySelectorAll('[data-list-node]').forEach((row) => {
-        if (stripJsonl(row.dataset?.listNode || '') !== cleanId) return;
-        const titleEl = row.querySelector?.('[data-role="list-title"]');
-        if (titleEl) titleEl.textContent = displayTitle;
-      });
-    }
   }
 
   flushPendingTitleSave({ skipCenterRender = false, preserveDom = true } = {}) {
@@ -153,25 +286,7 @@ export class SaveBranchManagerModal {
     const { avatar, chatId, value } = this.pendingTitleSave;
     this.pendingTitleSave = null;
     this.adapter.updateSaveMeta(avatar, chatId, { customTitle: value });
-    this.syncOverviewMetaCounts(avatar, { renderSidebar: !preserveDom });
-
-    if (preserveDom) {
-      if (!skipCenterRender) {
-        this.patchSaveDisplayInPlace(avatar, chatId);
-      }
-      this.scheduleSearchRefresh();
-      return;
-    }
-
-    if (
-      !skipCenterRender &&
-      this.currentCharacter &&
-      this.currentGraph &&
-      this.currentGraph.characterAvatar === this.currentCharacter.avatar &&
-      this.currentCharacter.avatar === avatar
-    ) {
-      this.renderCenterView();
-    }
+    this.afterMetaFlush([{ avatar, chatId }], { skipCenterRender, preserveDom });
   }
 
   flushPendingNoteSaves(targetKey = null, { skipCenterRender = false, preserveDom = true } = {}) {
@@ -183,349 +298,29 @@ export class SaveBranchManagerModal {
         ? [[targetKey, this.pendingNoteSaves.get(targetKey)]]
         : []
       : Array.from(this.pendingNoteSaves.entries());
-
     if (entries.length === 0) return;
 
-    const touchedAvatars = new Set();
-    const touchedSaves = [];
+    const touched = [];
     for (const [key, entry] of entries) {
       clearTimeout(entry.timer);
       this.pendingNoteSaves.delete(key);
       this.adapter.updateSaveMeta(entry.avatar, entry.chatId, { note: entry.value });
-      touchedAvatars.add(entry.avatar);
-      touchedSaves.push({ avatar: entry.avatar, chatId: entry.chatId });
-      if (entry.statusEl && entry.statusEl.isConnected) {
-        entry.statusEl.textContent = '✓ 已自动保存';
-      }
+      touched.push({ avatar: entry.avatar, chatId: entry.chatId });
     }
+    this.afterMetaFlush(touched, { skipCenterRender, preserveDom });
+  }
 
-    for (const avatar of touchedAvatars) {
+  afterMetaFlush(touched, { skipCenterRender, preserveDom }) {
+    for (const avatar of new Set(touched.map((t) => t.avatar))) {
       this.syncOverviewMetaCounts(avatar, { renderSidebar: !preserveDom });
     }
-
     if (preserveDom) {
       if (!skipCenterRender) {
-        for (const item of touchedSaves) {
-          this.patchSaveDisplayInPlace(item.avatar, item.chatId);
-        }
+        touched.forEach((t) => this.patchSaveDisplayInPlace(t.avatar, t.chatId));
       }
       this.scheduleSearchRefresh();
-      return;
-    }
-
-    if (
-      !skipCenterRender &&
-      this.currentCharacter &&
-      this.currentGraph &&
-      this.currentGraph.characterAvatar === this.currentCharacter.avatar &&
-      touchedAvatars.has(this.currentCharacter.avatar)
-    ) {
-      this.renderCenterView();
-    }
-  }
-
-  mount() {
-    if (this.backdropEl) return;
-
-    const backdrop = document.createElement('div');
-    backdrop.className = 'st-sbm-backdrop';
-    backdrop.hidden = true;
-    backdrop.innerHTML = `
-      <div class="st-sbm-modal" role="dialog" aria-modal="true" aria-label="全局存档与分支管理器">
-        <header class="st-sbm-topbar">
-          <div class="st-sbm-brand">
-            <div class="st-sbm-brand-icon">${ICONS.branchLg}</div>
-            <div class="st-sbm-brand-text">
-              <h2 class="st-sbm-brand-title">全局存档与分支大厅</h2>
-            </div>
-            <span class="st-sbm-env-badge" data-role="env-badge">检测环境中</span>
-          </div>
-
-          <div class="st-sbm-stats-row" data-role="global-stats"></div>
-
-          <div class="st-sbm-topbar-actions">
-            <div class="st-sbm-search-wrap">
-              <span class="st-sbm-search-icon">${ICONS.search}</span>
-              <input type="search" class="st-sbm-search-input" data-role="search-input" placeholder="搜角色、分支名、标签、备注或剧情..." />
-            </div>
-            <button type="button" class="st-sbm-btn" data-action="refresh" title="强制重新扫描全部存档并刷新缓存">${ICONS.refresh}<span>刷新扫描</span></button>
-            <button type="button" class="st-sbm-btn st-sbm-btn-icon st-sbm-btn-close" data-action="close" title="关闭 (Esc)">${ICONS.close}</button>
-          </div>
-        </header>
-
-        <div class="st-sbm-body">
-          <aside class="st-sbm-sidebar">
-            <div class="st-sbm-nav-tabs">
-              <button type="button" class="st-sbm-nav-tab is-active" data-tab="characters">${ICONS.users}<span>角色卡总览</span></button>
-              <button type="button" class="st-sbm-nav-tab" data-tab="bookmarks">${ICONS.star}<span>全局星标库</span></button>
-            </div>
-            <div class="st-sbm-filter-bar" data-role="char-filters">
-              <button type="button" class="st-sbm-filter-chip is-active" data-filter="all">全部</button>
-              <button type="button" class="st-sbm-filter-chip" data-filter="multi">多分支 (≥2)</button>
-              <button type="button" class="st-sbm-filter-chip" data-filter="starred">含星标 ★</button>
-            </div>
-            <div class="st-sbm-sidebar-list" data-role="sidebar-list"></div>
-          </aside>
-
-          <main class="st-sbm-main">
-            <div class="st-sbm-canvas-toolbar">
-              <div class="st-sbm-canvas-title-group">
-                <span class="st-sbm-canvas-char-name" data-role="canvas-title">选择角色查看分支树</span>
-                <span class="st-sbm-canvas-subtitle" data-role="canvas-subtitle"></span>
-              </div>
-              <div class="st-sbm-canvas-controls">
-                <div class="st-sbm-segmented">
-                  <button type="button" class="st-sbm-seg-btn is-active" data-view="tree">${ICONS.branch}<span>剧情分支树</span></button>
-                  <button type="button" class="st-sbm-seg-btn" data-view="list">${ICONS.list}<span>时间线列表</span></button>
-                </div>
-                <div class="st-sbm-zoom-group">
-                  <button type="button" class="st-sbm-btn" data-action="zoom-out" title="缩小">−</button>
-                  <button type="button" class="st-sbm-btn" data-action="zoom-fit" title="重置缩放并适应画布" data-role="zoom-label">100%</button>
-                  <button type="button" class="st-sbm-btn" data-action="zoom-in" title="放大">+</button>
-                </div>
-              </div>
-            </div>
-
-            <div class="st-sbm-viewport" data-role="viewport">
-              <div class="st-sbm-stage" data-role="stage"></div>
-            </div>
-            <div class="st-sbm-list-view" data-role="list-view" hidden></div>
-          </main>
-
-          <aside class="st-sbm-inspector" data-role="inspector">
-            <div class="st-sbm-empty-state">点击中间画布上的任意存档节点，<br/>即可查看精确的<strong>分叉楼层对比</strong>、编写备注标签或一键穿越过去继续聊天。</div>
-          </aside>
-        </div>
-      </div>
-    `;
-
-    document.body.appendChild(backdrop);
-    this.backdropEl = backdrop;
-    this.bindEvents();
-  }
-
-  bindEvents() {
-    const root = this.backdropEl;
-
-    // 点击遮罩空白处关闭
-    root.addEventListener('mousedown', (e) => {
-      if (e.target === root) this.close();
-    });
-
-    // Esc 快捷键关闭
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && this.backdropEl && !this.backdropEl.hidden) {
-        this.close();
-      }
-    });
-
-    // 顶栏按钮与视图切换事件委托
-    root.addEventListener('click', async (e) => {
-      const actionBtn = e.target.closest('[data-action]');
-      if (actionBtn) {
-        const action = actionBtn.dataset.action;
-        if (action === 'close') this.close();
-        if (action === 'refresh') await this.refreshAll(true);
-        if (action === 'zoom-in') this.setZoom(this.scale + 0.15);
-        if (action === 'zoom-out') this.setZoom(this.scale - 0.15);
-        if (action === 'zoom-fit') this.fitCanvas();
-        return;
-      }
-
-      const tabBtn = e.target.closest('[data-tab]');
-      if (tabBtn) {
-        this.sidebarTab = tabBtn.dataset.tab;
-        root.querySelectorAll('[data-tab]').forEach((el) => el.classList.toggle('is-active', el === tabBtn));
-        root.querySelector('[data-role="char-filters"]').hidden = this.sidebarTab !== 'characters';
-        this.renderSidebar();
-        return;
-      }
-
-      const filterBtn = e.target.closest('[data-filter]');
-      if (filterBtn) {
-        this.charFilter = filterBtn.dataset.filter;
-        root.querySelectorAll('[data-filter]').forEach((el) => el.classList.toggle('is-active', el === filterBtn));
-        this.renderSidebar();
-        return;
-      }
-
-      const viewBtn = e.target.closest('[data-view]');
-      if (viewBtn) {
-        const prevMode = this.canvasMode;
-        this.canvasMode = viewBtn.dataset.view;
-        root.querySelectorAll('[data-view]').forEach((el) => el.classList.toggle('is-active', el === viewBtn));
-        this.renderCenterView(prevMode !== 'tree' && this.canvasMode === 'tree');
-      }
-    });
-
-    // 搜索框实时过滤
-    const searchInput = root.querySelector('[data-role="search-input"]');
-    searchInput.addEventListener('input', () => {
-      this.searchQuery = searchInput.value.trim().toLowerCase();
-      this.renderSidebar();
-      if (this.currentGraph) {
-        this.renderCenterView();
-      }
-    });
-
-    // 画布拖拽平移与滚轮缩放
-    const viewport = root.querySelector('[data-role="viewport"]');
-    viewport.addEventListener('mousedown', (e) => {
-      if (e.target.closest('.st-sbm-node')) return;
-      this.isPanning = true;
-      this.panStartX = e.clientX - this.panX;
-      this.panStartY = e.clientY - this.panY;
-      viewport.classList.add('is-panning');
-    });
-
-    window.addEventListener('mousemove', (e) => {
-      if (!this.isPanning) return;
-      this.panX = e.clientX - this.panStartX;
-      this.panY = e.clientY - this.panStartY;
-      this.applyStageTransform();
-    });
-
-    window.addEventListener('mouseup', () => {
-      if (!this.isPanning) return;
-      this.isPanning = false;
-      viewport.classList.remove('is-panning');
-    });
-
-    viewport.addEventListener(
-      'wheel',
-      (e) => {
-        e.preventDefault();
-        const delta = e.deltaY < 0 ? 0.1 : -0.1;
-        const rect = viewport.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
-        this.setZoom(this.scale + delta, mouseX, mouseY);
-      },
-      { passive: false }
-    );
-  }
-
-  async open() {
-    this.mount();
-    this.adapter.bindSillyTavernEvents?.();
-    this.backdropEl.hidden = false;
-    const badge = this.backdropEl.querySelector('[data-role="env-badge"]');
-    const isLive = this.adapter.isSillyTavern();
-    badge.textContent = isLive ? '已连接酒馆实时数据' : '本地 Mock 预览模式';
-    badge.classList.toggle('is-live', isLive);
-
-    // 首次打开全量扫描；后续重开仅增量刷新当前活跃/变动过的角色，未变动角色直接复用缓存秒开
-    if (this.hasLoadedOverview) {
-      this.adapter.invalidateStaleSummaryTargets?.();
-    }
-    await this.refreshAll({ refreshSummaries: false, forceDigests: false });
-  }
-
-  close() {
-    clearTimeout(this.searchRefreshTimer);
-    this.searchRefreshTimer = null;
-    this.flushPendingNoteSaves(null, { skipCenterRender: true, preserveDom: true });
-    if (this.backdropEl) {
-      this.backdropEl.hidden = true;
-    }
-  }
-
-  showToast(message) {
-    const toast = document.createElement('div');
-    toast.className = 'st-sbm-toast';
-    toast.textContent = message;
-    document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 2200);
-  }
-
-  async refreshAll(options = false) {
-    this.flushPendingNoteSaves(null, { skipCenterRender: true, preserveDom: true });
-
-    const forceDigests = typeof options === 'boolean' ? options : Boolean(options?.forceDigests);
-    const refreshSummaries = typeof options === 'boolean' ? options : Boolean(options?.refreshSummaries || forceDigests);
-    const isIncrementalReopen = this.hasLoadedOverview && !refreshSummaries && !forceDigests && this.overviewList.length > 0;
-    const refreshId = ++this.refreshRequestSeq;
-    // 使此前尚未返回的 selectCharacter 立即失效
-    this.selectRequestSeq += 1;
-
-    // 保留重开/刷新前选中的角色与存档引用用于扫描完成后恢复，但立即清空旧画布与旧检查器，防止扫描期间误点已删除的存档
-    const prevAvatar = this.currentCharacter?.avatar || null;
-    const prevChatId = this.selectedChatId || null;
-    this.currentGraph = null;
-    this.selectedChatId = null;
-
-    const sidebarList = this.backdropEl.querySelector('[data-role="sidebar-list"]');
-    const stageEl = this.backdropEl.querySelector('[data-role="stage"]');
-    const listViewEl = this.backdropEl.querySelector('[data-role="list-view"]');
-    const subEl = this.backdropEl.querySelector('[data-role="canvas-subtitle"]');
-    if (isIncrementalReopen) {
-      sidebarList.classList?.add('is-syncing');
-    } else {
-      sidebarList.innerHTML = `<div class="st-sbm-empty-state">正在扫描角色卡与存档索引...</div>`;
-    }
-    if (subEl) subEl.textContent = isIncrementalReopen ? '正在增量同步活跃角色存档...' : '正在同步最新存档列表...';
-    if (stageEl) {
-      stageEl.innerHTML = `<div class="st-sbm-empty-state" style="width:420px;">${isIncrementalReopen ? '正在同步当前角色存档...' : '正在同步最新存档列表...'}</div>`;
-    }
-    if (listViewEl) {
-      listViewEl.innerHTML = `<div class="st-sbm-empty-state">${isIncrementalReopen ? '正在同步当前角色存档...' : '正在同步最新存档列表...'}</div>`;
-    }
-    this.renderInspector();
-
-    let overview;
-    try {
-      if (forceDigests) {
-        await this.adapter.clearDigestCache();
-        if (refreshId !== this.refreshRequestSeq) return;
-      }
-
-      overview = await this.adapter.loadGlobalOverview({
-        forceRefresh: refreshSummaries,
-        onProgress: (done, total) => {
-          if (refreshId !== this.refreshRequestSeq || isIncrementalReopen) return;
-          sidebarList.innerHTML = `<div class="st-sbm-empty-state">正在扫描角色存档 (${done} / ${total})...</div>`;
-        },
-      });
-    } catch (err) {
-      if (refreshId !== this.refreshRequestSeq) return;
-      sidebarList.classList?.remove('is-syncing');
-      sidebarList.innerHTML = `<div class="st-sbm-empty-state">扫描存档失败：${escapeHtml(err.message || String(err))}</div>`;
-      if (subEl) subEl.textContent = '扫描存档失败';
-      return;
-    }
-
-    if (refreshId !== this.refreshRequestSeq) return;
-
-    sidebarList.classList?.remove('is-syncing');
-    this.overviewList = overview;
-    this.hasLoadedOverview = true;
-
-    // 排序：当前正在游玩的角色置顶，其次按最新存档时间降序、存档数降序
-    this.overviewList.sort((a, b) => {
-      if (a.isCurrentCharacter !== b.isCurrentCharacter) return a.isCurrentCharacter ? -1 : 1;
-      if (b.latestTimestamp !== a.latestTimestamp) return b.latestTimestamp - a.latestTimestamp;
-      return b.saveCount - a.saveCount;
-    });
-
-    this.renderGlobalStats();
-    this.renderSidebar();
-
-    // 默认选中先前查看的角色或首个有存档的角色；仅当仍为同一角色时沿用先前选中的存档 ID
-    const targetChar =
-      this.overviewList.find((c) => c.avatar === prevAvatar) ||
-      this.overviewList.find((c) => c.isCurrentCharacter) ||
-      this.overviewList[0] ||
-      null;
-
-    if (targetChar) {
-      const preferredChatId = targetChar.avatar === prevAvatar ? prevChatId : null;
-      await this.selectCharacter(targetChar.avatar, preferredChatId, forceDigests);
-    } else {
-      this.currentCharacter = null;
-      this.currentGraph = null;
-      this.selectedChatId = null;
-      this.renderCenterView();
-      this.renderInspector();
+    } else if (!skipCenterRender) {
+      this.renderSaves();
     }
   }
 
@@ -542,25 +337,374 @@ export class SaveBranchManagerModal {
     });
     charEntry.starredCount = starredCount;
     charEntry.notedCount = notedCount;
-    this.renderGlobalStats();
-    if (renderSidebar) {
+    if (renderSidebar) this.renderSidebar();
+  }
+
+  /* ---------------------------------------------------------------------- *
+   * 挂载与事件
+   * ---------------------------------------------------------------------- */
+
+  mount() {
+    if (this.backdropEl) return;
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'st-sbm-backdrop';
+    backdrop.hidden = true;
+    backdrop.dataset.pane = 'saves';
+    backdrop.innerHTML = `
+      <div class="st-sbm-window" role="dialog" aria-modal="true" aria-label="存档与分支">
+        <aside class="st-sbm-sidebar">
+          <label class="st-sbm-search">
+            ${ICONS.search}
+            <input type="search" data-role="search-input" placeholder="搜索" aria-label="搜索" autocomplete="off" spellcheck="false" />
+          </label>
+          <div class="st-sbm-sidebar-list" data-role="sidebar-list"></div>
+        </aside>
+
+        <section class="st-sbm-saves">
+          <header class="st-sbm-saves-head">
+            <button type="button" class="st-sbm-round st-sbm-back" data-action="back-characters" aria-label="返回">${ICONS.back}</button>
+            <h2 data-role="saves-title"></h2>
+          </header>
+          <div class="st-sbm-saves-scroll" data-role="stage" role="listbox" aria-label="存档"></div>
+        </section>
+
+        <main class="st-sbm-detail">
+          <div class="st-sbm-art" data-role="art" aria-hidden="true"></div>
+          <button type="button" class="st-sbm-round st-sbm-back" data-action="back-saves" aria-label="返回">${ICONS.back}</button>
+          <div class="st-sbm-detail-scroll" data-role="inspector"></div>
+        </main>
+
+        <button type="button" class="st-sbm-round st-sbm-close" data-action="close" aria-label="关闭" title="关闭">${ICONS.close}</button>
+      </div>
+    `;
+
+    document.body.appendChild(backdrop);
+    this.backdropEl = backdrop;
+    this.bindEvents();
+  }
+
+  bindEvents() {
+    const root = this.backdropEl;
+    const searchInput = this.role('search-input');
+
+    root.addEventListener('mousedown', (e) => {
+      if (e.target === root) this.close();
+    });
+
+    root.addEventListener('click', (e) => {
+      const action = e.target.closest('[data-action]')?.dataset.action;
+      if (action === 'close') this.close();
+      if (action === 'retry') this.refreshAll(true);
+      if (action === 'back-characters') this.setPane('characters');
+      if (action === 'back-saves') this.setPane('saves');
+    });
+
+    this.role('sidebar-list').addEventListener('click', (e) => {
+      const item = e.target.closest('[data-library]');
+      if (!item) return;
+      if (item.dataset.library === 'starred') {
+        this.openStarred();
+        return;
+      }
+      const { avatar } = item.dataset;
+      const keepSelection = this.currentCharacter?.avatar === avatar ? this.selectedChatId : null;
+      this.library = 'character';
+      this.setPane('saves');
+      this.selectCharacter(avatar, keepSelection);
+    });
+
+    const stage = this.role('stage');
+    stage.addEventListener('click', (e) => {
+      const row = e.target.closest('[data-save-id]');
+      if (!row) return;
+      this.setPane('detail');
+      this.selectSave(row.dataset.saveAvatar, row.dataset.saveId);
+    });
+    stage.addEventListener('dblclick', async (e) => {
+      const row = e.target.closest('[data-save-id]');
+      if (!row) return;
+      const { saveAvatar, saveId } = row.dataset;
+      await this.selectSave(saveAvatar, saveId);
+      if (this.currentCharacter?.avatar === saveAvatar) this.handleJump(saveId, this.currentCharacter);
+    });
+
+    searchInput.addEventListener('input', () => {
+      this.searchQuery = searchInput.value.trim().toLowerCase();
       this.renderSidebar();
+      this.renderSaves();
+    });
+
+    // 角色图随滚动缓慢上移并淡出
+    const inspector = this.role('inspector');
+    inspector.addEventListener(
+      'scroll',
+      () => {
+        const art = this.role('art');
+        art.style.transform = `translateY(${-inspector.scrollTop * 0.5}px)`;
+        art.style.opacity = String(Math.max(0, 1 - inspector.scrollTop / 300));
+      },
+      { passive: true }
+    );
+
+    window.addEventListener('resize', () => {
+      if (!root.hidden) this.fitInspectorFields();
+    });
+
+    // 捕获阶段拦截：窗口打开时按键不应再触发酒馆自身的快捷键
+    document.addEventListener(
+      'keydown',
+      (e) => {
+        if (root.hidden || e.isComposing) return;
+        const focused = document.activeElement;
+        const isEditing = root.contains(focused) && focused.matches('input, textarea');
+        const handled = () => {
+          e.preventDefault();
+          e.stopPropagation();
+        };
+
+        if (e.key === 'Escape') {
+          handled();
+          if (focused === searchInput && searchInput.value) {
+            searchInput.value = '';
+            searchInput.dispatchEvent(new Event('input'));
+          } else if (isEditing) {
+            focused.blur();
+          } else {
+            this.close();
+          }
+          return;
+        }
+        if ((e.metaKey || e.ctrlKey) && ['k', 'f'].includes(e.key.toLowerCase())) {
+          handled();
+          this.setPane('characters');
+          searchInput.focus();
+          searchInput.select();
+          return;
+        }
+        if (isEditing || e.metaKey || e.ctrlKey || e.altKey) return;
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          handled();
+          this.moveSelection(e.key === 'ArrowDown' ? 1 : -1);
+        } else if (e.key === 'Enter' && focused?.tagName !== 'BUTTON' && this.selectedChatId) {
+          handled();
+          this.handleJump(this.selectedChatId, this.currentCharacter);
+        }
+      },
+      true
+    );
+  }
+
+  /* ---------------------------------------------------------------------- *
+   * 打开 / 关闭 / 刷新
+   * ---------------------------------------------------------------------- */
+
+  async open({ rescan = false } = {}) {
+    this.mount();
+    this.adapter.bindSillyTavernEvents?.();
+    this.backdropEl.dataset.theme = detectHostTheme();
+    this.backdropEl.hidden = false;
+    this.library = 'character';
+    this.setPane('saves');
+    document.activeElement?.blur?.();
+
+    if (this.hasLoadedOverview) {
+      this.adapter.invalidateStaleSummaryTargets?.();
+    }
+    await this.refreshAll({ refreshSummaries: rescan, forceDigests: rescan });
+  }
+
+  close() {
+    clearTimeout(this.searchRefreshTimer);
+    this.searchRefreshTimer = null;
+    this.flushPendingNoteSaves(null, { skipCenterRender: true, preserveDom: true });
+    if (this.backdropEl) {
+      this.backdropEl.hidden = true;
     }
   }
 
-  renderGlobalStats() {
-    const statsEl = this.backdropEl.querySelector('[data-role="global-stats"]');
-    const totalChars = this.overviewList.length;
-    const totalSaves = this.overviewList.reduce((sum, c) => sum + c.saveCount, 0);
-    const multiBranchChars = this.overviewList.filter((c) => c.saveCount >= 2).length;
-    const totalStarred = this.overviewList.reduce((sum, c) => sum + c.starredCount, 0);
+  showToast(message) {
+    const toast = document.createElement('div');
+    toast.className = 'st-sbm-toast';
+    toast.dataset.theme = detectHostTheme();
+    toast.setAttribute('role', 'status');
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 2400);
+  }
 
-    statsEl.innerHTML = `
-      <span class="st-sbm-stat-pill"><strong>${totalChars}</strong>张角色卡</span>
-      <span class="st-sbm-stat-pill"><strong>${totalSaves}</strong>个存档</span>
-      <span class="st-sbm-stat-pill"><strong>${multiBranchChars}</strong>张含多分支</span>
-      <span class="st-sbm-stat-pill"><strong>${totalStarred}</strong>个星标收藏</span>
-    `;
+  async refreshAll(options = false) {
+    this.flushPendingNoteSaves(null, { skipCenterRender: true, preserveDom: true });
+
+    const forceDigests = typeof options === 'boolean' ? options : Boolean(options?.forceDigests);
+    const refreshSummaries = typeof options === 'boolean' ? options : Boolean(options?.refreshSummaries || forceDigests);
+    const isIncrementalReopen = this.hasLoadedOverview && !refreshSummaries && !forceDigests && this.overviewList.length > 0;
+    const refreshId = ++this.refreshRequestSeq;
+    this.selectRequestSeq += 1;
+
+    const prevAvatar = this.currentCharacter?.avatar || null;
+    const prevChatId = this.selectedChatId || null;
+    this.currentGraph = null;
+    this.selectedChatId = null;
+
+    const sidebarList = this.role('sidebar-list');
+    if (!isIncrementalReopen) sidebarList.innerHTML = spinnerHtml;
+    this.role('stage').innerHTML = spinnerHtml;
+    this.renderInspector();
+
+    let overview;
+    try {
+      if (forceDigests) {
+        await this.adapter.clearDigestCache();
+        if (refreshId !== this.refreshRequestSeq) return;
+      }
+
+      overview = await this.adapter.loadGlobalOverview({
+        forceRefresh: refreshSummaries,
+        onProgress: (done, total) => {
+          if (refreshId !== this.refreshRequestSeq || isIncrementalReopen) return;
+          sidebarList.innerHTML = `<div class="st-sbm-progress"><i style="width:${Math.round((done / Math.max(1, total)) * 100)}%"></i></div>`;
+        },
+      });
+    } catch (err) {
+      if (refreshId !== this.refreshRequestSeq) return;
+      sidebarList.innerHTML = '';
+      this.role('stage').innerHTML = failureHtml(err);
+      return;
+    }
+
+    if (refreshId !== this.refreshRequestSeq) return;
+
+    this.overviewList = overview;
+    this.hasLoadedOverview = true;
+    this.overviewList.sort((a, b) => {
+      if (a.isCurrentCharacter !== b.isCurrentCharacter) return a.isCurrentCharacter ? -1 : 1;
+      if (b.latestTimestamp !== a.latestTimestamp) return b.latestTimestamp - a.latestTimestamp;
+      return b.saveCount - a.saveCount;
+    });
+
+    this.renderSidebar();
+
+    const targetChar =
+      this.overviewList.find((c) => c.avatar === prevAvatar) ||
+      this.overviewList.find((c) => c.isCurrentCharacter) ||
+      this.overviewList[0] ||
+      null;
+
+    if (targetChar) {
+      const preferredChatId = targetChar.avatar === prevAvatar ? prevChatId : null;
+      await this.selectCharacter(targetChar.avatar, preferredChatId, forceDigests);
+    } else {
+      this.currentCharacter = null;
+      this.currentGraph = null;
+      this.selectedChatId = null;
+      this.renderSaves();
+      this.renderInspector();
+    }
+  }
+
+  /* ---------------------------------------------------------------------- *
+   * 选择
+   * ---------------------------------------------------------------------- */
+
+  openStarred() {
+    this.flushPendingNoteSaves(null, { skipCenterRender: true });
+    this.library = 'starred';
+    this.setPane('saves');
+    this.renderSidebar();
+    this.renderSaves();
+
+    // 当前选中的不是星标存档时，落到第一条，避免列表与阅读页各说各话
+    const items = this.starredItems();
+    const isListed = items.some(
+      ({ ch, save }) => ch.avatar === this.currentCharacter?.avatar && save.chatId === this.selectedChatId
+    );
+    if (!isListed && items.length > 0) {
+      this.selectCharacter(items[0].ch.avatar, items[0].save.chatId);
+    }
+  }
+
+  async selectCharacter(avatar, preferredChatId = null, forceRefresh = false) {
+    const charEntry = this.overviewList.find((c) => c.avatar === avatar);
+    if (!charEntry) return;
+
+    this.flushPendingNoteSaves(null, { skipCenterRender: true });
+
+    const requestId = ++this.selectRequestSeq;
+    const isStale = () => requestId !== this.selectRequestSeq || this.currentCharacter?.avatar !== charEntry.avatar;
+
+    this.currentCharacter = charEntry;
+    this.currentGraph = null;
+    this.selectedChatId = null;
+    this.renderSidebar();
+    this.renderSaves();
+    this.renderInspector();
+
+    let digests;
+    try {
+      digests = await this.adapter.getCharacterChatDigests(charEntry, charEntry.saves, forceRefresh);
+    } catch (err) {
+      if (isStale()) return;
+      this.role(this.library === 'starred' ? 'inspector' : 'stage').innerHTML = failureHtml(err);
+      return;
+    }
+    if (isStale()) return;
+
+    const graph = buildCharacterBranchGraph(charEntry, digests);
+    graph.characterAvatar = charEntry.avatar;
+    this.currentGraph = graph;
+    this.indexAutoTitles(charEntry, graph);
+
+    const targetNode =
+      (preferredChatId && graph.nodes.find((n) => n.chatId === stripJsonl(preferredChatId))) ||
+      graph.nodes.find((n) => n.isActive) ||
+      graph.nodes.find((n) => n.isCharacterLastChat) ||
+      graph.nodes[0] ||
+      null;
+
+    this.selectedChatId = targetNode ? targetNode.chatId : null;
+    this.renderSaves();
+    this.renderInspector();
+    this.revealSelection(this.library === 'starred' ? 'nearest' : 'center');
+  }
+
+  async selectSave(avatar, chatId) {
+    if (this.currentCharacter?.avatar !== avatar || !this.activeGraph) {
+      await this.selectCharacter(avatar, chatId);
+      return;
+    }
+    const cleanId = stripJsonl(chatId);
+    if (cleanId === this.selectedChatId || !this.activeGraph.nodes.some((n) => n.chatId === cleanId)) return;
+    this.flushPendingNoteSaves(null, { skipCenterRender: true });
+    const prevId = this.selectedChatId;
+    this.selectedChatId = cleanId;
+    this.updateSelection(prevId);
+    this.renderInspector();
+    this.revealSelection();
+  }
+
+  /** 仅切换选中态，不重建列表，让轨道与行的过渡得以连续 */
+  updateSelection(prevId) {
+    const { avatar } = this.currentCharacter;
+    this.role('stage')
+      .querySelectorAll('[data-save-id]')
+      .forEach((row) => {
+        const isSelected = row.dataset.saveAvatar === avatar && stripJsonl(row.dataset.saveId) === this.selectedChatId;
+        row.setAttribute('aria-selected', String(isSelected));
+      });
+    if (this.library === 'character') this.renderRail(prevId);
+  }
+
+  moveSelection(step) {
+    const rows = Array.from(this.role('stage').querySelectorAll('[data-save-id]'));
+    if (rows.length === 0) return;
+    const index = rows.findIndex((row) => row.getAttribute('aria-selected') === 'true');
+    const next = rows[Math.min(rows.length - 1, Math.max(0, index + step))];
+    this.selectSave(next.dataset.saveAvatar, next.dataset.saveId);
+  }
+
+  revealSelection(block = 'nearest') {
+    this.role('stage').querySelector('[aria-selected="true"]')?.scrollIntoView({ block });
   }
 
   matchesSearch(charItem, saveItem = null) {
@@ -583,743 +727,533 @@ export class SaveBranchManagerModal {
     return charItem.saves.some(checkSave);
   }
 
+  starredItems() {
+    const items = [];
+    for (const ch of this.overviewList) {
+      for (const save of ch.saves) {
+        if (save.meta?.starred && this.matchesSearch(ch, save)) items.push({ ch, save });
+      }
+    }
+    return items.sort(
+      (a, b) =>
+        (parseSillyTavernTimestamp(b.save.lastModified) || 0) - (parseSillyTavernTimestamp(a.save.lastModified) || 0)
+    );
+  }
+
+  /* ---------------------------------------------------------------------- *
+   * 渲染：角色
+   * ---------------------------------------------------------------------- */
+
+  avatarHtml(ch) {
+    return `<img class="st-sbm-avatar" loading="lazy" src="${escapeHtml(ch.avatarSrc)}" data-fallback="${escapeHtml(ch.avatarFallbackSrc || '')}" alt="" />`;
+  }
+
   bindAvatarFallbacks(container) {
-    container.querySelectorAll('img.st-sbm-char-avatar').forEach((img) => {
+    container.querySelectorAll('img.st-sbm-avatar').forEach((img) => {
       img.addEventListener('error', () => {
-        const fb = img.dataset?.fallback;
-        if (fb && img.src !== fb) {
+        const fallback = img.dataset.fallback;
+        if (fallback) {
           img.dataset.fallback = '';
-          img.src = fb;
+          img.src = fallback;
         } else {
-          img.style.opacity = '0.2';
+          img.classList.add('is-missing');
+          img.removeAttribute('src');
         }
       });
     });
   }
 
   renderSidebar() {
-    const listEl = this.backdropEl.querySelector('[data-role="sidebar-list"]');
+    const listEl = this.role('sidebar-list');
+    const starredTotal = this.overviewList.reduce((sum, ch) => sum + (ch.starredCount || 0), 0);
+    const characters = this.overviewList.filter((ch) => this.matchesSearch(ch));
 
-    if (this.sidebarTab === 'bookmarks') {
-      const starredItems = [];
-      for (const ch of this.overviewList) {
-        for (const s of ch.saves) {
-          if (s.meta?.starred && this.matchesSearch(ch, s)) {
-            starredItems.push({ ch, save: s });
-          }
-        }
-      }
+    const starredHtml =
+      starredTotal > 0 || this.library === 'starred'
+        ? `<button type="button" class="st-sbm-side-item is-starred ${this.library === 'starred' ? 'is-selected' : ''}" data-library="starred">
+             <span class="st-sbm-side-glyph">${ICONS.starFill}</span>
+             <span class="st-sbm-side-name">星标</span>
+             <span class="st-sbm-side-count">${starredTotal || ''}</span>
+           </button>`
+        : '';
 
-      if (starredItems.length === 0) {
-        listEl.innerHTML = `<div class="st-sbm-empty-state">暂无匹配的星标存档。<br/>在分支节点上点击 ★ 即可收入全局书签库。</div>`;
-        return;
-      }
-
-      listEl.innerHTML = starredItems
-        .map(({ ch, save }) => {
-          const isSelected = this.currentCharacter?.avatar === ch.avatar && this.selectedChatId === save.chatId;
-          const displayTitle = save.meta.customTitle || prettifySaveName(save.chatId);
-          return `
-            <div class="st-sbm-char-item ${isSelected ? 'is-selected' : ''}" data-bookmark-avatar="${escapeHtml(ch.avatar)}" data-bookmark-chat="${escapeHtml(save.chatId)}">
-              <img class="st-sbm-char-avatar" loading="lazy" src="${escapeHtml(ch.avatarSrc)}" data-fallback="${escapeHtml(ch.avatarFallbackSrc || '')}" alt="${escapeHtml(ch.name)}" />
-              <div class="st-sbm-char-info">
-                <div class="st-sbm-char-name-row">
-                  <span class="st-sbm-char-name" data-role="bookmark-title">★ ${escapeHtml(displayTitle)}</span>
-                </div>
-                <div class="st-sbm-char-meta">
-                  <span>${escapeHtml(ch.name)}</span>
-                  <span class="st-sbm-badge-mini">${save.messageCount} 楼</span>
-                </div>
-              </div>
-            </div>
-          `;
-        })
-        .join('');
-
-      this.bindAvatarFallbacks(listEl);
-      listEl.querySelectorAll('[data-bookmark-avatar]').forEach((el) => {
-        el.addEventListener('click', () => {
-          this.selectCharacter(el.dataset.bookmarkAvatar, el.dataset.bookmarkChat);
-        });
-      });
-      return;
-    }
-
-    // 角色卡总览列表
-    const filtered = this.overviewList.filter((ch) => {
-      if (this.charFilter === 'multi' && ch.saveCount < 2) return false;
-      if (this.charFilter === 'starred' && ch.starredCount < 1) return false;
-      return this.matchesSearch(ch);
-    });
-
-    if (filtered.length === 0) {
-      listEl.innerHTML = `<div class="st-sbm-empty-state">没有符合筛选条件的角色卡</div>`;
-      return;
-    }
-
-    listEl.innerHTML = filtered
+    const charactersHtml = characters
       .map((ch) => {
-        const isSelected = this.currentCharacter?.avatar === ch.avatar;
-        const timeText = formatShortTime(ch.latestTimestamp);
+        const isSelected = this.library === 'character' && this.currentCharacter?.avatar === ch.avatar;
         return `
-          <div class="st-sbm-char-item ${isSelected ? 'is-selected' : ''}" data-char-avatar="${escapeHtml(ch.avatar)}">
-            <img class="st-sbm-char-avatar" loading="lazy" src="${escapeHtml(ch.avatarSrc)}" data-fallback="${escapeHtml(ch.avatarFallbackSrc || '')}" alt="${escapeHtml(ch.name)}" />
-            <div class="st-sbm-char-info">
-              <div class="st-sbm-char-name-row">
-                ${ch.isCurrentCharacter ? '<span class="st-sbm-live-dot" title="酒馆当前打开的角色"></span>' : ''}
-                <span class="st-sbm-char-name">${escapeHtml(ch.name)}</span>
-              </div>
-              <div class="st-sbm-char-meta">
-                <span class="st-sbm-badge-mini">${ch.saveCount} 存档</span>
-                ${ch.starredCount > 0 ? `<span class="st-sbm-badge-mini st-sbm-badge-star">★ ${ch.starredCount}</span>` : ''}
-                ${timeText ? `<span>${escapeHtml(timeText)}</span>` : ''}
-              </div>
-            </div>
-          </div>
-        `;
+          <button type="button" class="st-sbm-side-item ${isSelected ? 'is-selected' : ''}" data-library="character" data-avatar="${escapeHtml(ch.avatar)}" title="${escapeHtml(ch.name)}">
+            ${this.avatarHtml(ch)}
+            <span class="st-sbm-side-name">${escapeHtml(ch.name)}</span>
+            <span class="st-sbm-side-count">${ch.saveCount || ''}</span>
+          </button>`;
       })
       .join('');
 
+    listEl.innerHTML = starredHtml + (charactersHtml || (this.searchQuery ? emptyHtml('无结果') : ''));
     this.bindAvatarFallbacks(listEl);
-    listEl.querySelectorAll('[data-char-avatar]').forEach((el) => {
-      el.addEventListener('click', () => {
-        this.selectCharacter(el.dataset.charAvatar);
-      });
-    });
   }
 
-  async selectCharacter(avatar, preferredChatId = null, forceRefresh = false) {
-    const charEntry = this.overviewList.find((c) => c.avatar === avatar);
-    if (!charEntry) return;
+  /* ---------------------------------------------------------------------- *
+   * 渲染：故事线
+   * ---------------------------------------------------------------------- */
 
-    this.flushPendingNoteSaves(null, { skipCenterRender: true });
+  renderSaves() {
+    const stage = this.role('stage');
+    this.role('saves-title').textContent = this.library === 'starred' ? '星标' : this.currentCharacter?.name || '';
 
-    const requestId = ++this.selectRequestSeq;
-    this.currentCharacter = charEntry;
-    // 切换角色期间清空旧角色的画布与选中状态，防止在加载中误把旧存档提交给新角色
-    this.currentGraph = null;
-    this.selectedChatId = null;
-    this.renderSidebar();
-
-    const titleEl = this.backdropEl.querySelector('[data-role="canvas-title"]');
-    const subEl = this.backdropEl.querySelector('[data-role="canvas-subtitle"]');
-    const stageEl = this.backdropEl.querySelector('[data-role="stage"]');
-    const listViewEl = this.backdropEl.querySelector('[data-role="list-view"]');
-    titleEl.textContent = charEntry.name;
-    subEl.textContent = '正在分析存档楼层与分支点...';
-    if (stageEl) {
-      stageEl.innerHTML = `<div class="st-sbm-empty-state" style="width:420px;">正在加载「${escapeHtml(charEntry.name)}」的存档分支...</div>`;
-    }
-    if (listViewEl) {
-      listViewEl.innerHTML = `<div class="st-sbm-empty-state">正在加载「${escapeHtml(charEntry.name)}」的存档列表...</div>`;
-    }
-    this.renderInspector();
-
-    let digests;
-    try {
-      digests = await this.adapter.getCharacterChatDigests(charEntry, charEntry.saves, forceRefresh);
-    } catch (err) {
-      if (requestId !== this.selectRequestSeq || this.currentCharacter?.avatar !== charEntry.avatar) {
-        return;
-      }
-      subEl.textContent = `加载存档失败：${err.message || err}`;
-      if (stageEl) {
-        stageEl.innerHTML = `<div class="st-sbm-empty-state" style="width:420px;">加载存档失败：${escapeHtml(err.message || String(err))}</div>`;
-      }
+    if (this.library === 'starred') {
+      this.renderStarred(stage);
       return;
     }
-
-    // 竞态防护：若期间已切换至其他角色或发起更新请求，直接丢弃过期响应
-    if (requestId !== this.selectRequestSeq || this.currentCharacter?.avatar !== charEntry.avatar) {
+    const graph = this.activeGraph;
+    if (!graph) {
+      stage.innerHTML = this.currentCharacter ? spinnerHtml : emptyHtml('无存档');
       return;
     }
-
-    const graph = buildCharacterBranchGraph(charEntry, digests);
-    graph.characterAvatar = charEntry.avatar;
-    this.currentGraph = graph;
-
-    subEl.textContent = `共 ${graph.nodes.length} 个存档 · ${graph.rootCount} 条独立开局 · 识别出 ${graph.branchCount} 处剧情分叉`;
-
-    // 选择默认高亮存档节点
-    const targetNode =
-      (preferredChatId && graph.nodes.find((n) => n.chatId === stripJsonl(preferredChatId))) ||
-      graph.nodes.find((n) => n.isActive) ||
-      graph.nodes.find((n) => n.isCharacterLastChat) ||
-      graph.nodes[0] ||
-      null;
-
-    this.selectedChatId = targetNode ? targetNode.chatId : null;
-    if (this.sidebarTab === 'bookmarks') {
-      this.renderSidebar();
+    if (graph.nodes.length === 0) {
+      stage.innerHTML = emptyHtml('无存档');
+      return;
     }
-    this.renderCenterView(true);
-    this.renderInspector();
+    this.renderStoryline(stage, graph);
   }
 
-  renderCenterView(autoFit = false) {
-    const viewport = this.backdropEl.querySelector('[data-role="viewport"]');
-    const listView = this.backdropEl.querySelector('[data-role="list-view"]');
-
-    if (this.canvasMode === 'tree') {
-      viewport.hidden = false;
-      listView.hidden = true;
-      this.renderTreeStage();
-      if (autoFit) {
-        requestAnimationFrame(() => this.fitCanvas());
-      }
-    } else {
-      viewport.hidden = true;
-      listView.hidden = false;
-      this.renderTimelineList();
-    }
-  }
-
-  renderTreeStage() {
-    const stage = this.backdropEl.querySelector('[data-role="stage"]');
-    const graph = this.currentGraph;
-
-    if (!graph || graph.nodes.length === 0) {
-      stage.innerHTML = `<div class="st-sbm-empty-state" style="width:420px;">该角色卡下暂无聊天存档</div>`;
+  renderStarred(stage) {
+    const items = this.starredItems();
+    if (items.length === 0) {
+      stage.innerHTML = emptyHtml(this.searchQuery ? '无结果' : '无星标');
       return;
     }
-
-    stage.style.width = `${graph.canvasWidth}px`;
-    stage.style.height = `${graph.canvasHeight}px`;
-
-    // 计算当前选中节点的祖先链以高亮路径
-    const highlightedEdges = new Set();
-    if (this.selectedChatId) {
-      const map = new Map(graph.nodes.map((n) => [n.chatId, n]));
-      let cur = map.get(this.selectedChatId);
-      while (cur && cur.parentId) {
-        highlightedEdges.add(`${cur.parentId}->${cur.chatId}`);
-        cur = map.get(cur.parentId);
-      }
-    }
-
-    const nodeMap = new Map(graph.nodes.map((n) => [n.chatId, n]));
-    const svgPaths = graph.edges
-      .map((edge) => {
-        const hl = highlightedEdges.has(edge.id) ? 'is-highlighted' : '';
-        const cp = edge.isCheckpointSnapshot ? 'is-checkpoint' : '';
-        const fromNode = nodeMap.get(edge.fromId);
-        const toNode = nodeMap.get(edge.toId);
-        const dots =
-          fromNode && toNode
-            ? `<circle class="st-sbm-edge-dot ${hl}" cx="${fromNode.x + LAYOUT_CONFIG.nodeWidth}" cy="${fromNode.y + Math.round(LAYOUT_CONFIG.nodeHeight / 2)}" r="3.2" />
-               <circle class="st-sbm-edge-dot ${hl}" cx="${toNode.x}" cy="${toNode.y + Math.round(LAYOUT_CONFIG.nodeHeight / 2)}" r="3.2" />`
-            : '';
-        return `<path class="st-sbm-edge-path ${cp} ${hl}" d="${edge.path}" />${dots}`;
-      })
-      .join('');
-
-    const edgeBadges = graph.edges
-      .map((edge) => {
-        const hl = highlightedEdges.has(edge.id) ? 'is-highlighted' : '';
-        const cp = edge.isCheckpointSnapshot ? 'is-checkpoint' : '';
-        const label = edge.isExactCopy
-          ? `完整副本`
-          : edge.isCheckpointSnapshot
-          ? `#${edge.branchFloor} 楼检查点`
-          : `#${edge.branchFloor} 楼分叉`;
-        return `<div class="st-sbm-edge-badge ${cp} ${hl}" style="left:${edge.badgeX}px; top:${edge.badgeY}px;">${label}</div>`;
-      })
-      .join('');
-
-    const ownerCharacter = this.currentCharacter;
-    const ownerAvatar = ownerCharacter?.avatar || '';
-    if (!ownerCharacter || (graph.characterAvatar && graph.characterAvatar !== ownerAvatar)) {
-      return;
-    }
-
-    const nodeCards = graph.nodes
-      .map((node) => {
-        const meta = this.adapter.getSaveMeta(ownerAvatar, node.chatId);
-        const title = meta.customTitle || prettifySaveName(node.chatId);
-        const isSelected = node.chatId === this.selectedChatId;
-        const isSearchDimmed =
-          this.searchQuery &&
-          !this.matchesSearch(ownerCharacter, {
-            ...node,
-            meta,
-            previewText: node.lastFloorSnippet,
-          });
-
-        const nodeRoleClass = !node.branchMoment
-          ? 'is-root'
-          : node.branchMoment.isCheckpointSnapshot
-          ? 'is-checkpoint'
-          : 'is-branch';
-
-        const typePill = node.branchMoment
-          ? node.branchMoment.isCheckpointSnapshot
-            ? `<span class="st-sbm-pill st-sbm-pill-checkpoint">${ICONS.pin}#${node.branchMoment.branchFloor} 楼检查点</span>`
-            : `<span class="st-sbm-pill st-sbm-pill-branch">#${node.branchMoment.branchFloor} 楼分叉</span>`
-          : `<span class="st-sbm-pill st-sbm-pill-root">${ICONS.seed}开局主干</span>`;
-
-        const activePill = node.isActive
-          ? `<span class="st-sbm-pill st-sbm-pill-active">当前游玩</span>`
-          : node.isCharacterLastChat
-          ? `<span class="st-sbm-pill st-sbm-pill-floors">上次停留</span>`
-          : '';
-
-        const summaryLine =
-          node.branchMoment && node.branchMoment.childNextSnippet
-            ? `↳ ${node.branchMoment.childNextSpeaker}：${node.branchMoment.childNextSnippet}`
-            : node.lastFloorSnippet;
-
-        const tagsHtml = (meta.tags || [])
-          .slice(0, 3)
-          .map((t) => `<span class="st-sbm-tag-mini">#${escapeHtml(t)}</span>`)
-          .join('');
-
+    stage.innerHTML = items
+      .map(({ ch, save }) => {
+        const isSelected = this.currentCharacter?.avatar === ch.avatar && this.selectedChatId === save.chatId;
         return `
-          <div class="st-sbm-node ${nodeRoleClass} ${isSelected ? 'is-selected' : ''} ${node.isActive ? 'is-active-save' : ''}"
-               data-node-id="${escapeHtml(node.chatId)}"
-               style="left:${node.x}px; top:${node.y}px; ${isSearchDimmed ? 'opacity:0.32;' : ''}"
-               title="单击查看分叉详情，双击直接切换到该存档">
-            <div>
-              <div class="st-sbm-node-header">
-                <div class="st-sbm-node-pills">
-                  ${typePill}
-                  <span class="st-sbm-pill st-sbm-pill-floors">${node.floorCount} 楼</span>
-                  ${activePill}
-                </div>
-                <button type="button" class="st-sbm-star-btn ${meta.starred ? 'is-starred' : ''}" data-star-id="${escapeHtml(node.chatId)}" title="星标收藏">
-                  ${meta.starred ? '★' : '☆'}
-                </button>
+          <div class="st-sbm-row is-starred-row" role="option" aria-selected="${isSelected}" data-save-avatar="${escapeHtml(ch.avatar)}" data-save-id="${escapeHtml(save.chatId)}">
+            ${this.avatarHtml(ch)}
+            <div class="st-sbm-row-text">
+              <div class="st-sbm-row-top">
+                <span class="st-sbm-row-title" data-role="row-title">${escapeHtml(this.saveTitle(ch.avatar, save.chatId))}</span>
+                <span class="st-sbm-row-time">${escapeHtml(formatRelativeTime(save.lastModified))}</span>
               </div>
-              <div class="st-sbm-node-title" data-role="node-title">${escapeHtml(title)}</div>
+              <div class="st-sbm-row-sub">${escapeHtml(ch.name)}</div>
             </div>
+          </div>`;
+      })
+      .join('');
+    this.bindAvatarFallbacks(stage);
+  }
 
-            <div class="st-sbm-node-snippet">${escapeHtml(summaryLine)}</div>
+  renderStoryline(stage, graph) {
+    const owner = this.currentCharacter;
+    const order = graph.order || graph.nodes;
+    const byId = new Map(order.map((n) => [n.chatId, n]));
 
-            <div class="st-sbm-node-footer">
-              <div class="st-sbm-node-tags">${tagsHtml}</div>
-              <span class="st-sbm-node-time"><span data-role="node-note-icon">${meta.note ? '📝 ' : ''}</span>${escapeHtml(formatShortTime(node.lastModified))}</span>
+    const pos = new Map();
+    let top = 0;
+    order.forEach((node, index) => {
+      // 树与树之间留白；连续的独立单存档保持紧凑
+      const prev = order[index - 1];
+      if (prev && !node.parentId && (prev.parentId || node.childrenIds.length > 0)) top += RAIL.treeGap;
+      pos.set(node.chatId, {
+        x: RAIL.inset + Math.min(node.lane || 0, RAIL.maxLane) * RAIL.laneWidth,
+        top,
+        y: top + RAIL.rowHeight / 2,
+      });
+      top += RAIL.rowHeight;
+    });
+    const height = top;
+    const lanes = Math.min(graph.laneCount || 1, RAIL.maxLane + 1);
+    const hasRail = order.some((n) => n.parentId); // 没有任何分叉时无需轨道
+    const railWidth = hasRail ? RAIL.inset + (lanes - 1) * RAIL.laneWidth + RAIL.gutter : 16;
+
+    this.railLayout = { order, byId, pos };
+
+    const rowsHtml = order
+      .map((node) => {
+        const meta = this.adapter.getSaveMeta(owner.avatar, node.chatId);
+        const isDimmed = this.searchQuery && !this.matchesSearch(owner, { ...node, meta, previewText: node.lastFloorSnippet });
+        const bm = node.branchMoment;
+        // 标题讲从哪里开始，副行讲现在走到哪里
+        const snippet = bm?.isCheckpointSnapshot
+          ? '检查点'
+          : bm?.isExactCopy
+          ? '副本'
+          : plainText(node.lastFloorSnippet);
+        return `
+          <div class="st-sbm-row ${isDimmed ? 'is-dimmed' : ''}" role="option" aria-selected="${node.chatId === this.selectedChatId}" style="top:${pos.get(node.chatId).top}px;padding-left:${railWidth}px" data-save-avatar="${escapeHtml(owner.avatar)}" data-save-id="${escapeHtml(node.chatId)}">
+            <div class="st-sbm-row-text">
+              <div class="st-sbm-row-top">
+                <span class="st-sbm-row-title" data-role="row-title">${escapeHtml(this.saveTitle(owner.avatar, node.chatId))}</span>
+                ${meta.starred ? `<span class="st-sbm-row-star">${ICONS.starFill}</span>` : ''}
+                ${
+                  node.isActive
+                    ? '<span class="st-sbm-row-time is-current">当前</span>'
+                    : `<span class="st-sbm-row-time">${escapeHtml(formatRelativeTime(node.lastModified))}</span>`
+                }
+              </div>
+              <div class="st-sbm-row-sub">${bm ? `<b>#${bm.branchFloor}</b>` : ''}${escapeHtml(snippet)}</div>
             </div>
-          </div>
-        `;
+          </div>`;
       })
       .join('');
 
     stage.innerHTML = `
-      <svg class="st-sbm-edges-svg" width="${graph.canvasWidth}" height="${graph.canvasHeight}">
-        ${svgPaths}
-      </svg>
-      ${edgeBadges}
-      ${nodeCards}
-    `;
-
-    // 绑定节点点击、双击与快捷星标事件
-    stage.querySelectorAll('[data-star-id]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (!this.currentCharacter || this.currentCharacter.avatar !== ownerAvatar) return;
-        this.flushPendingNoteSaves(null, { skipCenterRender: true });
-        const chatId = btn.dataset.starId;
-        const cur = this.adapter.getSaveMeta(ownerAvatar, chatId);
-        this.adapter.updateSaveMeta(ownerAvatar, chatId, { starred: !cur.starred });
-        this.syncOverviewMetaCounts(ownerAvatar);
-        this.renderTreeStage();
-        if (this.selectedChatId === chatId) this.renderInspector();
-      });
-    });
-
-    stage.querySelectorAll('[data-node-id]').forEach((card) => {
-      card.addEventListener('click', () => {
-        if (!this.currentCharacter || this.currentCharacter.avatar !== ownerAvatar) return;
-        this.flushPendingNoteSaves(null, { skipCenterRender: true });
-        this.selectedChatId = card.dataset.nodeId;
-        if (this.sidebarTab === 'bookmarks') this.renderSidebar();
-        this.renderTreeStage();
-        this.renderInspector();
-      });
-      card.addEventListener('dblclick', () => {
-        if (!this.currentCharacter || this.currentCharacter.avatar !== ownerAvatar) return;
-        this.handleJump(card.dataset.nodeId, ownerCharacter);
-      });
-    });
-
-    this.applyStageTransform();
+      <div class="st-sbm-storyline" style="height:${height}px">
+        ${rowsHtml}
+        ${hasRail ? `<svg class="st-sbm-rail" data-role="rail" width="${railWidth}" height="${height}" aria-hidden="true"></svg>` : ''}
+      </div>`;
+    if (hasRail) this.renderRail();
   }
 
-  renderTimelineList() {
-    const listView = this.backdropEl.querySelector('[data-role="list-view"]');
-    const graph = this.currentGraph;
-    const ownerCharacter = this.currentCharacter;
-    if (!graph || graph.nodes.length === 0 || !ownerCharacter || (graph.characterAvatar && graph.characterAvatar !== ownerCharacter.avatar)) {
-      listView.innerHTML = `<div class="st-sbm-empty-state">该角色卡下暂无聊天存档</div>`;
+  /** 绘制轨道；给出 prevId 时，蓝线从两条路径的岔口收回旧线、长出新线 */
+  renderRail(prevId = null) {
+    const rail = this.role('rail');
+    if (!rail || !this.railLayout) return;
+    const { order, byId, pos } = this.railLayout;
+
+    // 连到父存档的一段；moveTo 为 false 时可直接拼接在父段之后
+    const segment = (node, moveTo = true) => {
+      const from = pos.get(node.parentId);
+      const to = pos.get(node.chatId);
+      if (!from) return '';
+      const bend = Math.min(22, to.y - from.y);
+      const line =
+        from.x === to.x
+          ? `V${to.y}`
+          : `V${to.y - bend}C${from.x} ${to.y - 4} ${to.x - 6} ${to.y} ${to.x} ${to.y}`;
+      return (moveTo ? `M${from.x} ${from.y}` : '') + line;
+    };
+    const pathTo = (id) => {
+      const nodes = [];
+      for (let cur = byId.get(id); cur; cur = byId.get(cur.parentId)) nodes.unshift(cur);
+      return nodes;
+    };
+    const toD = (nodes) => nodes.map((n, i) => (i === 0 ? `M${pos.get(n.chatId).x} ${pos.get(n.chatId).y}` : segment(n, false))).join('');
+
+    const path = pathTo(this.selectedChatId);
+    const onPath = new Set(path.map((n) => n.chatId));
+    const prevPath = prevId ? pathTo(prevId) : [];
+    let sharedCount = 0;
+    while (sharedCount < path.length && path[sharedCount] === prevPath[sharedCount]) sharedCount += 1;
+    const shared = path.slice(0, sharedCount);
+
+    const dot = (node) => {
+      const { x, y } = pos.get(node.chatId);
+      const isSelected = node.chatId === this.selectedChatId;
+      const cls = [
+        onPath.has(node.chatId) ? 'is-path' : '',
+        isSelected ? 'is-selected' : '',
+        node.branchMoment?.isCheckpointSnapshot ? 'is-checkpoint' : '',
+      ].join(' ');
+      return `<circle class="${cls}" cx="${x}" cy="${y}" r="${isSelected ? 6 : 4.5}"/>`;
+    };
+
+    rail.innerHTML =
+      order.map((n) => `<path d="${segment(n)}"/>`).join('') +
+      `<path class="is-path" data-line="old" d="${prevPath.length ? toD(prevPath) : ''}"/>` +
+      `<path class="is-path" data-line="new" d="${toD(path)}"/>` +
+      order.map(dot).join('');
+
+    const oldLine = rail.querySelector('[data-line="old"]');
+    const newLine = rail.querySelector('[data-line="new"]');
+    if (!oldLine || !newLine) return;
+    if (!prevPath.length || prefersReducedMotion()) {
+      oldLine.remove();
       return;
     }
 
-    const ownerAvatar = ownerCharacter.avatar;
-    const sorted = [...graph.nodes].sort(
-      (a, b) => (parseSillyTavernTimestamp(b.lastModified) || 0) - (parseSillyTavernTimestamp(a.lastModified) || 0)
-    );
-    listView.innerHTML = sorted
-      .map((node) => {
-        const meta = this.adapter.getSaveMeta(ownerAvatar, node.chatId);
-        const title = meta.customTitle || prettifySaveName(node.chatId);
-        const isSelected = node.chatId === this.selectedChatId;
-        const isSearchDimmed =
-          this.searchQuery &&
-          !this.matchesSearch(ownerCharacter, {
-            ...node,
-            meta,
-            previewText: node.lastFloorSnippet,
-          });
-        const branchBadge = node.branchMoment
-          ? node.branchMoment.isCheckpointSnapshot
-            ? `<span class="st-sbm-pill st-sbm-pill-checkpoint">${ICONS.pin}#${node.branchMoment.branchFloor} 楼检查点</span>`
-            : `<span class="st-sbm-pill st-sbm-pill-branch">从 #${node.branchMoment.branchFloor} 楼分叉</span>`
-          : `<span class="st-sbm-pill st-sbm-pill-root">${ICONS.seed}开局主干</span>`;
-
-        return `
-          <div class="st-sbm-list-row ${isSelected ? 'is-selected' : ''}" data-list-node="${escapeHtml(node.chatId)}" style="${isSearchDimmed ? 'opacity:0.32;' : ''}">
-            <div class="st-sbm-list-main">
-              <div class="st-sbm-list-head">
-                ${meta.starred ? '<span class="st-sbm-list-star">★</span>' : ''}
-                <strong class="st-sbm-list-title" data-role="list-title">${escapeHtml(title)}</strong>
-                ${branchBadge}
-                <span class="st-sbm-pill st-sbm-pill-floors">${node.floorCount} 楼</span>
-                ${node.isActive ? '<span class="st-sbm-pill st-sbm-pill-active">当前游玩</span>' : ''}
-              </div>
-              <div class="st-sbm-list-snippet">
-                ${escapeHtml(node.lastFloorSnippet)}
-              </div>
-            </div>
-            <div class="st-sbm-list-meta">
-              <div>${escapeHtml(formatShortTime(node.lastModified))}</div>
-              ${node.fileSize ? `<div class="st-sbm-list-size">${escapeHtml(node.fileSize)}</div>` : ''}
-            </div>
-          </div>
-        `;
-      })
-      .join('');
-
-    listView.querySelectorAll('[data-list-node]').forEach((row) => {
-      row.addEventListener('click', () => {
-        if (!this.currentCharacter || this.currentCharacter.avatar !== ownerAvatar) return;
-        this.flushPendingNoteSaves(null, { skipCenterRender: true });
-        this.selectedChatId = row.dataset.listNode;
-        if (this.sidebarTab === 'bookmarks') this.renderSidebar();
-        this.renderTimelineList();
-        this.renderInspector();
-      });
-      row.addEventListener('dblclick', () => {
-        if (!this.currentCharacter || this.currentCharacter.avatar !== ownerAvatar) return;
-        this.handleJump(row.dataset.listNode, ownerCharacter);
-      });
+    const measure = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    measure.setAttribute('d', toD(shared));
+    const sharedLength = shared.length > 1 ? measure.getTotalLength() : 0;
+    const timing = { duration: 380, easing: 'cubic-bezier(0.32, 0.72, 0, 1)', fill: 'both' };
+    const slide = (line, from, to) => {
+      const total = line.getTotalLength();
+      line.style.strokeDasharray = `${total} ${total}`;
+      return line.animate(
+        [{ strokeDashoffset: total - from(total) }, { strokeDashoffset: total - to(total) }],
+        timing
+      );
+    };
+    slide(oldLine, (total) => total, () => sharedLength).onfinish = () => oldLine.remove();
+    slide(newLine, () => sharedLength, (total) => total).onfinish = () => {
+      newLine.style.strokeDasharray = '';
+    };
+    rail.querySelector('circle.is-selected')?.animate([{ r: '3px', opacity: 0 }, { r: '6px', opacity: 1 }], {
+      ...timing,
+      duration: 260,
+      delay: 140,
     });
   }
 
-  applyStageTransform() {
-    const stage = this.backdropEl.querySelector('[data-role="stage"]');
-    const zoomLabel = this.backdropEl.querySelector('[data-role="zoom-label"]');
-    if (stage) {
-      stage.style.transform = `translate(${Math.round(this.panX)}px, ${Math.round(this.panY)}px) scale(${this.scale.toFixed(3)})`;
+  /* ---------------------------------------------------------------------- *
+   * 渲染：阅读页
+   * ---------------------------------------------------------------------- */
+
+  forkHtml(node, parent, avatar) {
+    const bm = node.branchMoment;
+    const paths = [];
+    if (bm.childNextSnippet) paths.push({ isSelf: true, node, text: bm.childNextSnippet });
+    if (bm.parentNextSnippet) paths.push({ node: parent, text: bm.parentNextSnippet });
+    for (const sib of this.currentGraph.nodes) {
+      if (paths.length >= 4) break;
+      if (sib === node || sib.parentId !== node.parentId) continue;
+      if (sib.branchMoment?.branchFloor !== bm.branchFloor || !sib.branchMoment.childNextSnippet) continue;
+      paths.push({ node: sib, text: sib.branchMoment.childNextSnippet });
     }
-    if (zoomLabel) {
-      zoomLabel.textContent = `${Math.round(this.scale * 100)}%`;
-    }
+    trimSharedOpening(paths.map((p) => plainText(p.text))).forEach((text, i) => {
+      paths[i].text = text;
+    });
+
+    const self = paths.find((p) => p.isSelf);
+    const others = paths.filter((p) => !p.isSelf);
+    const columns = [self, others.length ? others : null].filter(Boolean);
+
+    const lines = columns
+      .map((col, i) => ({ isSelf: col === self, x: ((i + 0.5) / columns.length) * 100 }))
+      .reverse()
+      .map(({ isSelf, x }) => `<path class="${isSelf ? 'is-path' : ''}" d="M50 0C50 22 ${x} 10 ${x} 32"/>`)
+      .join('');
+
+    const otherCard = (p) => {
+      // 标题取自正文首句时不再重复一遍，只在存档有名字时显示
+      const isNamed = !p.node.isAutoNamed || this.adapter.getSaveMeta(avatar, p.node.chatId).customTitle;
+      const title = isNamed ? `<span class="st-sbm-fork-title">${escapeHtml(this.saveTitle(avatar, p.node.chatId))}</span>` : '';
+      return `<button type="button" class="st-sbm-fork-card" data-select-save="${escapeHtml(p.node.chatId)}">${title}<span class="st-sbm-fork-text">${escapeHtml(p.text)}</span></button>`;
+    };
+
+    // 源存档已作为另一条走向列出时，不再重复给出链接
+    const parentLink = others.some((p) => p.node === parent)
+      ? ''
+      : `<button type="button" class="st-sbm-link" data-select-save="${escapeHtml(parent.chatId)}"><span>${escapeHtml(this.saveTitle(avatar, parent.chatId))}</span>${ICONS.chevron}</button>`;
+
+    const heading = bm.isExactCopy ? '副本' : bm.isCheckpointSnapshot ? '检查点' : '分歧';
+    return `
+      <section class="st-sbm-section">
+        <header><h3>${heading} <em>#${bm.branchFloor}</em></h3>${parentLink}</header>
+        <div class="st-sbm-fork">
+          <div class="st-sbm-fork-anchor"><span>${escapeHtml(plainText(bm.anchorSnippet) || '—')}</span></div>
+          ${
+            columns.length
+              ? `<svg class="st-sbm-fork-lines" viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden="true">${lines}</svg>
+                 <div class="st-sbm-fork-cards">
+                   ${self ? `<div class="st-sbm-fork-card is-self"><span class="st-sbm-fork-text">${escapeHtml(self.text)}</span></div>` : ''}
+                   ${others.length ? `<div class="st-sbm-fork-others">${others.map(otherCard).join('')}</div>` : ''}
+                 </div>`
+              : ''
+          }
+        </div>
+      </section>`;
   }
 
-  setZoom(nextScale, originX = null, originY = null) {
-    const clamped = Math.min(1.6, Math.max(0.45, nextScale));
-    const viewport = this.backdropEl.querySelector('[data-role="viewport"]');
-    const cx = originX ?? viewport.clientWidth / 2;
-    const cy = originY ?? viewport.clientHeight / 2;
-
-    const ratio = clamped / this.scale;
-    this.panX = cx - (cx - this.panX) * ratio;
-    this.panY = cy - (cy - this.panY) * ratio;
-    this.scale = clamped;
-    this.applyStageTransform();
+  bubblesHtml(floors) {
+    return `<div class="st-sbm-chat">${floors
+      .map((f) => `<div class="st-sbm-bubble ${f.isUser ? 'is-user' : ''}"><span>${escapeHtml(plainText(f.snippet))}</span></div>`)
+      .join('')}</div>`;
   }
 
-  fitCanvas() {
-    const viewport = this.backdropEl.querySelector('[data-role="viewport"]');
-    const graph = this.currentGraph;
-    if (!viewport || !graph || viewport.clientWidth === 0 || viewport.clientHeight === 0) return;
+  tagsHtml(meta) {
+    const selected = meta.tags || [];
+    if (!this.tagEditorOpen) {
+      return `
+        ${selected.map((tag) => `<span class="st-sbm-tag">${escapeHtml(tag)}</span>`).join('')}
+        <button type="button" class="st-sbm-tag is-add" data-role="tag-editor-btn" aria-label="编辑标签" title="标签">${selected.length ? ICONS.plus : `${ICONS.plus}标签`}</button>`;
+    }
+    const all = Array.from(new Set([...PRESET_TAGS, ...selected]));
+    return `
+      ${all
+        .map(
+          (tag) =>
+            `<button type="button" class="st-sbm-tag is-option" aria-pressed="${selected.includes(tag)}" data-toggle-tag="${escapeHtml(tag)}">${escapeHtml(tag)}</button>`
+        )
+        .join('')}
+      <input type="text" class="st-sbm-tag-input" data-role="new-tag-input" placeholder="新标签" aria-label="新标签" />
+      <button type="button" class="st-sbm-tag is-add is-done" data-role="tag-editor-btn" aria-label="完成" title="完成">${ICONS.check}</button>`;
+  }
 
-    const scaleX = (viewport.clientWidth - 48) / graph.canvasWidth;
-    const scaleY = (viewport.clientHeight - 48) / graph.canvasHeight;
-    this.scale = Math.min(1, Math.max(0.45, Math.min(scaleX, scaleY)));
-    this.panX = Math.max(20, Math.round((viewport.clientWidth - graph.canvasWidth * this.scale) / 2));
-    this.panY = Math.max(20, Math.round((viewport.clientHeight - graph.canvasHeight * this.scale) / 2));
-    this.applyStageTransform();
+  /** 页头角色图：缩略图只取颜色作氛围光，原图到位后在右侧淡入；切换角色时交叉淡化 */
+  renderArt() {
+    const art = this.role('art');
+    const ch = this.currentCharacter;
+    const key = ch?.avatar || '';
+    if (!art || this.artKey === key) return;
+    this.artKey = key;
+
+    art.querySelectorAll('.st-sbm-art-layer').forEach((layer) => {
+      layer.classList.add('is-leaving');
+      setTimeout(() => layer.remove(), 500);
+    });
+    if (!ch?.avatarSrc) return;
+
+    const layer = document.createElement('div');
+    layer.className = 'st-sbm-art-layer';
+    for (const [className, src] of [
+      ['is-glow', ch.avatarSrc],
+      ['is-portrait', ch.avatarFallbackSrc || ch.avatarSrc],
+    ]) {
+      const img = document.createElement('img');
+      img.className = className;
+      img.alt = '';
+      img.addEventListener('load', () => img.classList.add('is-loaded'));
+      img.addEventListener('error', () => img.remove());
+      img.src = src;
+      layer.appendChild(img);
+    }
+    art.appendChild(layer);
   }
 
   renderInspector() {
-    const insp = this.backdropEl.querySelector('[data-role="inspector"]');
-    if (
-      !this.currentCharacter ||
-      !this.currentGraph ||
-      !this.selectedChatId ||
-      (this.currentGraph.characterAvatar && this.currentGraph.characterAvatar !== this.currentCharacter.avatar)
-    ) {
-      insp.innerHTML = `<div class="st-sbm-empty-state">点击中间画布上的任意存档节点，查看分叉楼层对比与备注。</div>`;
+    const insp = this.role('inspector');
+    this.renderArt();
+    const graph = this.activeGraph;
+    const node = graph && this.selectedChatId ? graph.nodes.find((n) => n.chatId === this.selectedChatId) : null;
+    if (!node) {
+      this.inspectorKey = null;
+      insp.innerHTML = '';
       return;
     }
 
-    const node = this.currentGraph.nodes.find((n) => n.chatId === this.selectedChatId);
-    if (!node) return;
-
     const ownerCharacter = this.currentCharacter;
     const avatar = ownerCharacter.avatar;
+    const noteSaveKey = `${avatar}::${stripJsonl(node.chatId)}`;
+    const isSameSave = this.inspectorKey === noteSaveKey;
+    const prevScroll = isSameSave ? insp.scrollTop : 0;
+    if (!isSameSave) this.tagEditorOpen = false;
+    this.inspectorKey = noteSaveKey;
+
     const meta = this.adapter.getSaveMeta(avatar, node.chatId);
-    const parentNode = node.parentId ? this.currentGraph.nodes.find((n) => n.chatId === node.parentId) : null;
-    const parentTitle = parentNode
-      ? this.adapter.getSaveMeta(avatar, parentNode.chatId).customTitle || prettifySaveName(parentNode.chatId)
+    const parent = node.parentId ? graph.nodes.find((n) => n.chatId === node.parentId) : null;
+    const hasFork = Boolean(node.branchMoment && parent);
+
+    const timeText = formatFullTime(node.lastModified);
+    const metaBits = [`${node.floorCount} 楼`];
+    if (timeText) metaBits.push(timeText);
+    if (this.library === 'starred') metaBits.unshift(ownerCharacter.name);
+
+    const originHtml = hasFork
+      ? this.forkHtml(node, parent, avatar)
+      : node.floors[0]
+      ? `<section class="st-sbm-section"><header><h3>开场</h3></header>${this.bubblesHtml([node.floors[0]])}</section>`
       : '';
 
-    let branchSectionHtml = '';
-    if (node.branchMoment && parentNode) {
-      const bm = node.branchMoment;
-      const parentNextHtml = bm.parentNextSnippet
-        ? `<div class="st-sbm-diff-box is-parent-next">
-             <div class="st-sbm-diff-label">原存档后续 (第 ${bm.branchFloor + 1} 楼 · ${escapeHtml(bm.parentNextSpeaker)})</div>
-             <div>${escapeHtml(bm.parentNextSnippet)}</div>
-           </div>`
-        : `<div class="st-sbm-diff-box is-parent-next">
-             <div class="st-sbm-diff-label">原存档状态</div>
-             <div>父存档在此第 ${bm.branchFloor} 楼定格（作为检查点存档）</div>
-           </div>`;
-
-      const childNextHtml = bm.childNextSnippet
-        ? `<div class="st-sbm-diff-box is-child-next">
-             <div class="st-sbm-diff-label">本分支新走向 (第 ${bm.branchFloor + 1} 楼 · ${escapeHtml(bm.childNextSpeaker)})</div>
-             <div>${escapeHtml(bm.childNextSnippet)}</div>
-           </div>`
-        : `<div class="st-sbm-diff-box is-child-next">
-             <div class="st-sbm-diff-label">本分支状态</div>
-             <div>${
-               bm.isCheckpointSnapshot
-                 ? `在父存档第 ${bm.branchFloor} 楼处定格（检查点存档）`
-                 : `与父存档前 ${bm.branchFloor} 楼完全一致（备份存档）`
-             }</div>
-           </div>`;
-
-      branchSectionHtml = `
-        <section class="st-sbm-section">
-          <div class="st-sbm-section-title">
-            <span class="st-sbm-section-heading">${bm.isCheckpointSnapshot ? `${ICONS.pin}<span>检查点 · 第 ${bm.branchFloor} 楼</span>` : `${ICONS.branch}<span>分叉时刻 · 第 ${bm.branchFloor} 楼</span>`}</span>
-            <button type="button" class="st-sbm-link-btn" data-select-parent="${escapeHtml(parentNode.chatId)}" title="跳转到父存档：${escapeHtml(parentTitle)}">
-              源头：${escapeHtml(parentTitle)}
-            </button>
-          </div>
-          <div class="st-sbm-diff-box is-anchor">
-            <div class="st-sbm-diff-label">分叉前最后共同剧情 (第 ${bm.branchFloor} 楼 · ${escapeHtml(bm.anchorSpeaker)})</div>
-            <div>${escapeHtml(bm.anchorSnippet || '无文本摘要')}</div>
-          </div>
-          ${parentNextHtml}
-          ${childNextHtml}
-        </section>
-      `;
-    } else {
-      const firstFloor = node.floors[0];
-      branchSectionHtml = `
-        <section class="st-sbm-section">
-          <div class="st-sbm-section-title">
-            <span class="st-sbm-section-heading">${ICONS.seed}<span>开局起点主干</span></span>
-            <span class="st-sbm-badge-mini">派生子分支 ${node.childrenIds.length}</span>
-          </div>
-          <div class="st-sbm-diff-box is-anchor">
-            <div class="st-sbm-diff-label">开场白 (第 1 楼 · ${escapeHtml(firstFloor?.name || '开局')})</div>
-            <div>${escapeHtml(firstFloor?.snippet || '暂无消息')}</div>
-          </div>
-        </section>
-      `;
-    }
-
-    const allTags = Array.from(new Set([...PRESET_TAGS, ...(meta.tags || [])]));
-    const tagsChipsHtml = allTags
-      .map((tag) => {
-        const selected = (meta.tags || []).includes(tag);
-        return `<button type="button" class="st-sbm-tag-chip ${selected ? 'is-selected' : ''}" data-toggle-tag="${escapeHtml(tag)}">#${escapeHtml(tag)}</button>`;
-      })
-      .join('');
-
-    const tailFloors = node.floors.slice(-3);
-    const tailHtml = tailFloors
-      .map(
-        (f) => `
-        <div class="st-sbm-tail-msg ${f.isUser ? 'is-user' : ''}">
-          <div class="st-sbm-tail-msg-head">
-            <strong>${escapeHtml(f.name)}</strong>
-            <span>#${f.floor}</span>
-          </div>
-          <div>${escapeHtml(f.snippet)}</div>
-        </div>
-      `
-      )
-      .join('');
+    // 已在「分歧 / 开场」中出现过的楼层不再重复
+    const shownUntil = hasFork ? node.branchMoment.branchFloor + 1 : 1;
+    const latest = node.floors.filter((f) => f.floor > shownUntil).slice(-2);
 
     insp.innerHTML = `
-      <div class="st-sbm-insp-header">
-        <input type="text" class="st-sbm-title-input" data-role="custom-title"
-               value="${escapeHtml(meta.customTitle)}"
-               placeholder="${escapeHtml(prettifySaveName(node.chatId))} (点击设置易记别名)" />
-        <div class="st-sbm-file-sub">
-          文件：${escapeHtml(node.chatId)}.jsonl · 共 ${node.floorCount} 楼 ${node.fileSize ? `· ${escapeHtml(node.fileSize)}` : ''}
-        </div>
-      </div>
+      <article class="st-sbm-page ${isSameSave ? '' : 'is-entering'}">
+        <header class="st-sbm-hero">
+          <textarea class="st-sbm-title" data-role="custom-title" rows="1" spellcheck="false" aria-label="名称" placeholder="${escapeHtml(this.autoTitles.get(noteSaveKey) || this.summaryTitle(avatar, stripJsonl(node.chatId)))}">${escapeHtml(meta.customTitle)}</textarea>
+          <p class="st-sbm-meta" title="${escapeHtml(node.chatId)}.jsonl">${node.isActive ? '<b>当前</b>' : ''}${metaBits.map((b) => `<span>${escapeHtml(b)}</span>`).join('')}</p>
+          <div class="st-sbm-actions">
+            <button type="button" class="st-sbm-primary" data-role="jump-btn">继续</button>
+            <button type="button" class="st-sbm-round st-sbm-star ${meta.starred ? 'is-on' : ''}" data-role="insp-star-btn" aria-label="星标" aria-pressed="${Boolean(meta.starred)}" title="星标">${meta.starred ? ICONS.starFill : ICONS.star}</button>
+          </div>
+        </header>
 
-      <div class="st-sbm-cta-row">
-        <button type="button" class="st-sbm-btn ${node.isActive ? 'st-sbm-btn-active-save' : 'st-sbm-btn-primary'} st-sbm-cta-jump" data-role="jump-btn">
-          ${node.isActive ? `${ICONS.check}<span>当前正在此存档中</span>` : `${ICONS.play}<span>切换到此存档继续游玩</span>`}
-        </button>
-        <button type="button" class="st-sbm-btn ${meta.starred ? 'st-sbm-btn-star-active' : ''}" data-role="insp-star-btn" title="收藏到全局星标库">
-          ${meta.starred ? `${ICONS.starFill}<span>已星标</span>` : `${ICONS.star}<span>星标</span>`}
-        </button>
-      </div>
+        <div class="st-sbm-annot ${!meta.note && !meta.tags.length && !this.tagEditorOpen ? 'is-empty' : ''}">
+          <textarea class="st-sbm-note" data-role="note-input" rows="1" aria-label="备注" placeholder="备注">${escapeHtml(meta.note)}</textarea>
+          <div class="st-sbm-tags">${this.tagsHtml(meta)}</div>
+        </div>
 
-      ${branchSectionHtml}
-
-      <section class="st-sbm-section">
-        <div class="st-sbm-section-title">
-          <span class="st-sbm-section-heading">${ICONS.tag}<span>分支标签</span></span>
-        </div>
-        <div class="st-sbm-tags-wrap">${tagsChipsHtml}</div>
-        <div class="st-sbm-custom-tag-row">
-          <input type="text" class="st-sbm-small-input" data-role="new-tag-input" placeholder="输入自定义标签回车添加..." />
-          <button type="button" class="st-sbm-btn" data-role="add-tag-btn">添加</button>
-        </div>
-      </section>
-
-      <section class="st-sbm-section">
-        <div class="st-sbm-section-title">
-          <span class="st-sbm-section-heading">${ICONS.note}<span>剧情进度备注</span></span>
-          <span data-role="save-status" class="st-sbm-save-status">自动保存</span>
-        </div>
-        <textarea class="st-sbm-note-textarea" data-role="note-input" placeholder="记录这条分支的攻略路线、世界书开关状态或待填的坑...">${escapeHtml(meta.note)}</textarea>
-      </section>
-
-      <section class="st-sbm-section">
-        <div class="st-sbm-section-title">
-          <span class="st-sbm-section-heading">${ICONS.chat}<span>存档末尾进度预览</span></span>
-        </div>
-        <div class="st-sbm-tail-list">
-          ${tailHtml || '<div style="font-size:12px;color:var(--sbm-text-muted);">暂无聊天记录</div>'}
-        </div>
-      </section>
+        ${originHtml}
+        ${latest.length ? `<section class="st-sbm-section"><header><h3>最新</h3></header>${this.bubblesHtml(latest)}</section>` : ''}
+      </article>
     `;
 
-    // 绑定检查器交互事件
-    const noteSaveKey = `${avatar}::${stripJsonl(node.chatId)}`;
+    this.bindInspector(insp, { node, avatar, ownerCharacter, noteSaveKey });
+    insp.scrollTop = prevScroll;
+  }
+
+  bindInspector(insp, { node, avatar, ownerCharacter, noteSaveKey }) {
     const titleInput = insp.querySelector('[data-role="custom-title"]');
+    const noteInput = insp.querySelector('[data-role="note-input"]');
+    fitTextarea(titleInput);
+    fitTextarea(noteInput);
+
+    const queueTitle = () => {
+      this.pendingTitleSave = { avatar, chatId: node.chatId, value: titleInput.value.replace(/\s*\n\s*/g, ' ').trim() };
+    };
     titleInput.addEventListener('input', () => {
-      this.pendingTitleSave = {
-        avatar,
-        chatId: node.chatId,
-        value: titleInput.value.trim(),
-      };
+      fitTextarea(titleInput);
+      queueTitle();
     });
     titleInput.addEventListener('change', () => {
-      this.pendingTitleSave = {
-        avatar,
-        chatId: node.chatId,
-        value: titleInput.value.trim(),
-      };
+      queueTitle();
       this.flushPendingNoteSaves(noteSaveKey, { skipCenterRender: true, preserveDom: true });
       this.flushPendingTitleSave({ preserveDom: true });
     });
     titleInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        this.pendingTitleSave = {
-          avatar,
-          chatId: node.chatId,
-          value: titleInput.value.trim(),
-        };
-        this.flushPendingTitleSave({ preserveDom: true });
-        titleInput.blur?.();
-      }
+      if (e.key !== 'Enter' || e.isComposing) return;
+      e.preventDefault();
+      queueTitle();
+      this.flushPendingTitleSave({ preserveDom: true });
+      titleInput.blur?.();
     });
 
-    insp.querySelector('[data-role="insp-star-btn"]').addEventListener('click', () => {
-      this.flushPendingNoteSaves(noteSaveKey, { skipCenterRender: true });
-      const cur = this.adapter.getSaveMeta(avatar, node.chatId);
-      this.adapter.updateSaveMeta(avatar, node.chatId, { starred: !cur.starred });
-      this.syncOverviewMetaCounts(avatar);
-      this.renderCenterView();
-      this.renderInspector();
-    });
-
-    insp.querySelector('[data-role="jump-btn"]').addEventListener('click', () => {
-      this.handleJump(node.chatId, ownerCharacter);
-    });
-
-    const parentBtn = insp.querySelector('[data-select-parent]');
-    if (parentBtn) {
-      parentBtn.addEventListener('click', () => {
-        this.flushPendingNoteSaves(null, { skipCenterRender: true });
-        this.selectedChatId = parentBtn.dataset.selectParent;
-        this.renderCenterView();
-        this.renderInspector();
-      });
-    }
-
-    insp.querySelectorAll('[data-toggle-tag]').forEach((chip) => {
-      chip.addEventListener('click', () => {
-        this.flushPendingNoteSaves(noteSaveKey, { skipCenterRender: true });
-        const tag = chip.dataset.toggleTag;
-        const curTags = new Set(this.adapter.getSaveMeta(avatar, node.chatId).tags);
-        if (curTags.has(tag)) curTags.delete(tag);
-        else curTags.add(tag);
-        this.adapter.updateSaveMeta(avatar, node.chatId, { tags: Array.from(curTags) });
-        this.syncOverviewMetaCounts(avatar);
-        this.renderCenterView();
-        this.renderInspector();
-      });
-    });
-
-    const addCustomTag = () => {
-      const input = insp.querySelector('[data-role="new-tag-input"]');
-      const val = input.value.trim().replace(/^#/, '');
-      if (!val) return;
-      this.flushPendingNoteSaves(noteSaveKey, { skipCenterRender: true });
-      const curTags = new Set(this.adapter.getSaveMeta(avatar, node.chatId).tags);
-      curTags.add(val);
-      this.adapter.updateSaveMeta(avatar, node.chatId, { tags: Array.from(curTags) });
-      this.syncOverviewMetaCounts(avatar);
-      this.renderCenterView();
-      this.renderInspector();
-    };
-
-    insp.querySelector('[data-role="add-tag-btn"]').addEventListener('click', addCustomTag);
-    insp.querySelector('[data-role="new-tag-input"]').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        addCustomTag();
-      }
-    });
-
-    const noteInput = insp.querySelector('[data-role="note-input"]');
-    const statusEl = insp.querySelector('[data-role="save-status"]');
     noteInput.addEventListener('input', () => {
-      statusEl.textContent = '正在输入...';
-      const existing = this.pendingNoteSaves.get(noteSaveKey);
-      if (existing) {
-        clearTimeout(existing.timer);
-      }
-      const value = noteInput.value.trim();
-      const timer = setTimeout(() => {
-        this.flushPendingNoteSaves(noteSaveKey);
-      }, 320);
+      fitTextarea(noteInput);
+      clearTimeout(this.pendingNoteSaves.get(noteSaveKey)?.timer);
       this.pendingNoteSaves.set(noteSaveKey, {
         avatar,
         chatId: node.chatId,
-        value,
-        timer,
-        statusEl,
+        value: noteInput.value.trim(),
+        timer: setTimeout(() => this.flushPendingNoteSaves(noteSaveKey), 320),
       });
     });
     noteInput.addEventListener('blur', () => {
       this.flushPendingNoteSaves(noteSaveKey, { preserveDom: true });
     });
+
+    const updateMeta = (patch) => {
+      this.flushPendingNoteSaves(null, { skipCenterRender: true });
+      this.adapter.updateSaveMeta(avatar, node.chatId, patch(this.adapter.getSaveMeta(avatar, node.chatId)));
+      this.syncOverviewMetaCounts(avatar);
+      this.renderSaves();
+      this.renderInspector();
+    };
+
+    insp.querySelector('[data-role="insp-star-btn"]').addEventListener('click', () => {
+      updateMeta((cur) => ({ starred: !cur.starred }));
+    });
+    insp.querySelector('[data-role="jump-btn"]').addEventListener('click', () => {
+      this.handleJump(node.chatId, ownerCharacter);
+    });
+    insp.querySelectorAll('[data-select-save]').forEach((btn) => {
+      btn.addEventListener('click', () => this.selectSave(avatar, btn.dataset.selectSave));
+    });
+
+    const tagInput = insp.querySelector('[data-role="new-tag-input"]');
+    const commitNewTag = () => {
+      const tag = tagInput?.value.trim().replace(/^#/, '');
+      if (!tag) return false;
+      updateMeta((cur) => ({ tags: Array.from(new Set([...cur.tags, tag])) }));
+      return true;
+    };
+    insp.querySelector('[data-role="tag-editor-btn"]').addEventListener('click', () => {
+      const closing = this.tagEditorOpen;
+      this.tagEditorOpen = !closing;
+      if (closing && commitNewTag()) return;
+      this.flushPendingNoteSaves(null, { skipCenterRender: true });
+      this.renderInspector();
+      if (!closing) this.role('new-tag-input')?.focus();
+    });
+    tagInput?.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.isComposing) return;
+      e.preventDefault();
+      if (commitNewTag()) this.role('new-tag-input')?.focus();
+    });
+    insp.querySelectorAll('[data-toggle-tag]').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        const tag = chip.dataset.toggleTag;
+        updateMeta((cur) => ({
+          tags: cur.tags.includes(tag) ? cur.tags.filter((t) => t !== tag) : [...cur.tags, tag],
+        }));
+      });
+    });
   }
+
+  /* ---------------------------------------------------------------------- *
+   * 跳转
+   * ---------------------------------------------------------------------- */
 
   async handleJump(chatId, characterOverride = null) {
     const targetCharacter = characterOverride || this.currentCharacter;
@@ -1332,23 +1266,21 @@ export class SaveBranchManagerModal {
     ) {
       return;
     }
-    if (this.isJumping) {
-      this.showToast('正在切换存档，请稍候...');
-      return;
-    }
+    if (this.isJumping) return;
 
     this.flushPendingNoteSaves(null, { skipCenterRender: true, preserveDom: true });
     this.isJumping = true;
+    const jumpBtn = this.role('jump-btn');
+    jumpBtn?.classList.add('is-busy');
     try {
       await this.adapter.jumpToSave(targetCharacter, cleanChatId);
-      const meta = this.adapter.getSaveMeta(targetCharacter.avatar, cleanChatId);
-      const label = meta.customTitle || prettifySaveName(cleanChatId);
-      this.showToast(`已切换至「${targetCharacter.name} · ${label}」`);
       this.close();
+      this.showToast(this.saveTitle(targetCharacter.avatar, cleanChatId));
     } catch (err) {
-      this.showToast(`切换存档失败：${err.message}`);
+      this.showToast(`切换失败：${err.message}`);
     } finally {
       this.isJumping = false;
+      jumpBtn?.classList.remove('is-busy');
     }
   }
 }

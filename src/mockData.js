@@ -3,18 +3,21 @@
  * 用于在未连接 SillyTavern 后端时，在 preview.html 中完整演示多角色、多层嵌套分支、书签与状态切换。
  */
 
-function svgAvatar(bg1, bg2, emoji, label) {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+/** 2:3 竖版示意立绘，与真实角色卡比例一致 */
+function portrait(sky1, sky2, light, hair, cloth) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="600" viewBox="0 0 400 600">
     <defs>
-      <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stop-color="${bg1}"/>
-        <stop offset="100%" stop-color="${bg2}"/>
-      </linearGradient>
+      <linearGradient id="s" x1="0" y1="0" x2="0.6" y2="1"><stop offset="0" stop-color="${sky1}"/><stop offset="1" stop-color="${sky2}"/></linearGradient>
+      <radialGradient id="l"><stop offset="0" stop-color="${light}"/><stop offset="1" stop-color="${light}" stop-opacity="0"/></radialGradient>
     </defs>
-    <rect width="160" height="160" rx="28" fill="url(#g)"/>
-    <circle cx="80" cy="64" r="34" fill="rgba(255,255,255,0.14)"/>
-    <text x="80" y="76" font-size="38" text-anchor="middle">${emoji}</text>
-    <text x="80" y="132" font-size="16" font-family="system-ui, sans-serif" font-weight="600" fill="rgba(255,255,255,0.92)" text-anchor="middle">${label}</text>
+    <rect width="400" height="600" fill="url(#s)"/>
+    <circle cx="275" cy="120" r="210" fill="url(#l)" opacity="0.75"/>
+    <path d="M0 470 Q110 400 210 450 T400 420 V600 H0Z" fill="${sky2}" opacity="0.7"/>
+    <path d="M200 118c62 0 92 48 92 112 0 92 34 150 22 222H86c-12-72 22-130 22-222 0-64 30-112 92-112z" fill="${hair}"/>
+    <path d="M52 600c8-118 62-164 120-172h56c58 8 112 54 120 172z" fill="${cloth}"/>
+    <path d="M176 330h48v84c0 22-48 22-48 0z" fill="#eac7b0"/>
+    <path d="M200 160c40 0 60 34 60 84 0 62-30 104-60 104s-60-42-60-104c0-50 20-84 60-84z" fill="#f6dcc8"/>
+    <path d="M200 132c56 0 78 44 74 108-18-18-34-44-42-70-18 34-60 58-106 66 0-60 22-104 74-104z" fill="${hair}"/>
   </svg>`;
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
@@ -69,7 +72,7 @@ export const MOCK_CHARACTERS = [
     id: 0,
     name: '伊蕾娜 · 灰之魔女',
     avatar: 'elaina_witch.png',
-    avatarSrc: svgAvatar('#5b4b8a', '#2e294e', '🧙‍♀️', '伊蕾娜'),
+    avatarSrc: portrait('#8f7fd0', '#2b2550', '#ffe6b8', '#d9d4e6', '#2f2a4a'),
     description: '漫游诸国的灰之魔女，贪财却温柔的旅途搭档',
     chat: '2026-11-23@18h20m_星砂拓印真结局',
   },
@@ -77,7 +80,7 @@ export const MOCK_CHARACTERS = [
     id: 1,
     name: '零 · 赛博黑客',
     avatar: 'zero_netrunner.png',
-    avatarSrc: svgAvatar('#0f4c75', '#1b262c', '⚡', 'Zero'),
+    avatarSrc: portrait('#0f6ea8', '#0c1b2e', '#3ff0ff', '#1d2233', '#101826'),
     description: '新京都第七区潜行黑客，义眼搭载军用级破译矩阵',
     chat: '2026-11-22@23h40m_夜莺酒吧潜入线',
   },
@@ -85,7 +88,7 @@ export const MOCK_CHARACTERS = [
     id: 2,
     name: '林夏 · 盛夏天台',
     avatar: 'linxia_summer.png',
-    avatarSrc: svgAvatar('#d96b43', '#8c3b4a', '🌻', '林夏'),
+    avatarSrc: portrait('#ffb27a', '#c9506a', '#fff0b0', '#4a2a2a', '#f7f3ee'),
     description: '相伴十年的青梅竹马，藏在速写本最后一页的心事',
     chat: '2026-11-21@19h15m_同城约定线',
   },
@@ -93,7 +96,7 @@ export const MOCK_CHARACTERS = [
     id: 3,
     name: '塞西莉亚 · 深渊圣女',
     avatar: 'cecilia_saint.png',
-    avatarSrc: svgAvatar('#3a3d5c', '#191a29', '🕯️', '塞西莉亚'),
+    avatarSrc: portrait('#3d4468', '#14162a', '#e8d9b0', '#e8e2d2', '#eceaf2'),
     description: '镇守裂隙大圣堂的盲眼圣女，手握银白荆棘戒律',
     chat: '2026-11-17@15h00m_初遇礼拜堂',
   },

@@ -4,20 +4,10 @@
  * 核心职责：
  * 1. 解析同一角色下的多个聊天存档摘要，结合官方 main_chat 元数据与逐楼层最长公共前缀 (LCP) 哈希比对，推导父子分支树。
  * 2. 提取每次分叉的精确“分支时刻”：分叉楼层、共同锚点剧情、原主线走向 vs 新分支走向。
- * 3. 计算从左到右的整洁树状图坐标（Reingold-Tilford 风格层次居中排版），无需依赖外部大型图形库。
+ * 3. 将分支森林编排为自上而下的「故事线」：延续剧情直行，分叉剧情向右开出新轨道。
  */
 
 import { stripJsonl, parseSillyTavernTimestamp } from './adapter.js';
-
-export const LAYOUT_CONFIG = {
-  nodeWidth: 280,
-  nodeHeight: 132,
-  horizontalGap: 124,
-  verticalGap: 28,
-  treeGap: 52,
-  paddingX: 48,
-  paddingY: 48,
-};
 
 /**
  * 从元数据或酒馆默认文件名（如 2026-11-19@21h00m12s）解析创建时间戳，用于同级分支先后排序
@@ -143,9 +133,9 @@ export function buildCharacterBranchGraph(character, rawDigests = []) {
       parentId: null,
       childrenIds: [],
       branchMoment: null,
-      depth: 0,
-      x: 0,
-      y: 0,
+      row: 0,
+      lane: 0,
+      isContinuation: false,
     };
   });
 
@@ -274,84 +264,61 @@ export function buildCharacterBranchGraph(character, rawDigests = []) {
     .filter((n) => !n.parentId)
     .sort((a, b) => a._createdTime - b._createdTime);
 
-  // 第五步：计算树状图二维坐标与连接线
-  const layout = layoutForest(roots, nodeById);
+  // 第五步：编排故事线
+  const { order, laneCount } = layoutStoryline(roots, nodeById);
 
   return {
     nodes,
     roots,
-    edges: layout.edges,
-    canvasWidth: layout.width,
-    canvasHeight: layout.height,
+    order,
+    laneCount,
     branchCount: nodes.filter((n) => Boolean(n.parentId)).length,
     rootCount: roots.length,
   };
 }
 
 /**
- * 整洁层次树布局：父节点在所有子节点的垂直中心，多棵独立开局树自上而下排列
+ * 故事线布局：每个存档占一行 (row) 与一条轨道 (lane)
+ * - 父存档恰好停在分叉楼层时，最近游玩的那个子存档视为延续，留在父轨道直行
+ * - 其余子存档向右开出新轨道，并排在延续之前，因此轨道之间永不交叉
  */
-function layoutForest(roots, nodeById, cfg = LAYOUT_CONFIG) {
-  let currentLeafY = cfg.paddingY;
-  let maxRightX = cfg.paddingX + cfg.nodeWidth;
-  let maxBottomY = cfg.paddingY + cfg.nodeHeight;
-  const edges = [];
+function layoutStoryline(roots, nodeById) {
+  const order = [];
+  let laneCount = 0;
 
-  function layoutSubtree(node, depth) {
-    node.depth = depth;
-    node.x = cfg.paddingX + depth * (cfg.nodeWidth + cfg.horizontalGap);
-    maxRightX = Math.max(maxRightX, node.x + cfg.nodeWidth);
-
-    const children = node.childrenIds.map((id) => nodeById.get(id)).filter(Boolean);
-    if (children.length === 0) {
-      node.y = currentLeafY;
-      currentLeafY += cfg.nodeHeight + cfg.verticalGap;
-      maxBottomY = Math.max(maxBottomY, node.y + cfg.nodeHeight);
-      return node.y;
-    }
-
-    const childYs = [];
-    for (const child of children) {
-      childYs.push(layoutSubtree(child, depth + 1));
-    }
-
-    // 父节点垂直居中于首尾子节点之间
-    node.y = Math.round((childYs[0] + childYs[childYs.length - 1]) / 2);
-    maxBottomY = Math.max(maxBottomY, node.y + cfg.nodeHeight);
-
-    for (const child of children) {
-      const startX = node.x + cfg.nodeWidth;
-      const startY = node.y + Math.round(cfg.nodeHeight / 2);
-      const endX = child.x;
-      const endY = child.y + Math.round(cfg.nodeHeight / 2);
-      const midX = Math.round((startX + endX) / 2);
-
-      edges.push({
-        id: `${node.chatId}->${child.chatId}`,
-        fromId: node.chatId,
-        toId: child.chatId,
-        branchFloor: child.branchMoment?.branchFloor || 1,
-        isExactCopy: Boolean(child.branchMoment?.isExactCopy),
-        isCheckpointSnapshot: Boolean(child.branchMoment?.isCheckpointSnapshot),
-        path: `M ${startX} ${startY} C ${midX} ${startY}, ${midX} ${endY}, ${endX} ${endY}`,
-        badgeX: midX,
-        badgeY: Math.round((startY + endY) / 2),
-      });
-    }
-
-    return node.y;
-  }
-
-  roots.forEach((root, idx) => {
-    if (idx > 0) {
-      currentLeafY += cfg.treeGap - cfg.verticalGap;
-    }
-    layoutSubtree(root, 0);
-  });
-
-  return {
-    edges,
-    width: maxRightX + cfg.paddingX + 40,
-    height: maxBottomY + cfg.paddingY + 40,
+  const latestTime = new Map();
+  const measure = (node) => {
+    let latest = parseSillyTavernTimestamp(node.lastModified) || 0;
+    for (const id of node.childrenIds) latest = Math.max(latest, measure(nodeById.get(id)));
+    latestTime.set(node.chatId, latest);
+    return latest;
   };
+
+  const place = (node, lane) => {
+    node.row = order.length;
+    node.lane = lane;
+    order.push(node);
+    laneCount = Math.max(laneCount, lane + 1);
+
+    const children = node.childrenIds.map((id) => nodeById.get(id));
+    const continuation = children
+      .filter((c) => c.branchMoment?.branchFloor === node.floors.length)
+      .reduce((best, c) => (!best || latestTime.get(c.chatId) > latestTime.get(best.chatId) ? c : best), null);
+
+    for (const child of children) {
+      if (child !== continuation) place(child, lane + 1);
+    }
+    if (continuation) {
+      continuation.isContinuation = true;
+      place(continuation, lane);
+    }
+  };
+
+  // 最近游玩过的剧情树排在最前
+  roots.forEach(measure);
+  [...roots]
+    .sort((a, b) => latestTime.get(b.chatId) - latestTime.get(a.chatId))
+    .forEach((root) => place(root, 0));
+
+  return { order, laneCount };
 }

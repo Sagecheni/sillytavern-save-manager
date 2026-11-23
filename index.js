@@ -21,10 +21,10 @@ function mountExtensionMenuButton() {
     item.id = 'st_sbm_wand_btn';
     item.className = 'list-group-item flex-container flexGap5 interactable';
     item.tabIndex = 0;
-    item.title = '打开全局存档与分支大厅 (/saves)';
+    item.title = '存档与分支 (/saves)';
     item.innerHTML = `
       <div class="fa-solid fa-code-branch extensionsMenuExtensionButton"></div>
-      <span>全局存档与分支大厅</span>
+      <span>存档与分支</span>
     `;
     item.addEventListener('click', () => modal.open());
     extensionsMenu.appendChild(item);
@@ -44,21 +44,18 @@ function mountSettingsPanel() {
   wrapper.className = 'inline-drawer';
   wrapper.innerHTML = `
     <div class="inline-drawer-toggle inline-drawer-header">
-      <b>🌿 全局存档与分支管理器</b>
+      <b>存档与分支</b>
       <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
     </div>
     <div class="inline-drawer-content" style="display:none; padding:8px 4px;">
-      <p style="font-size:12.5px; opacity:0.85; margin:4px 0 10px;">
-        跨角色卡汇总所有聊天存档、自动识别分叉楼层并绘制剧情分支树。你也可以在聊天框输入 <code>/saves</code> 快速呼出。
-      </p>
       <div class="flex-container flexGap10">
         <div id="st_sbm_open_hall_btn" class="menu_button menu_button_icon interactable">
-          <i class="fa-solid fa-sitemap"></i>
-          <span>打开全局存档大厅</span>
+          <i class="fa-solid fa-code-branch"></i>
+          <span>打开存档管理</span>
         </div>
-        <div id="st_sbm_clear_cache_btn" class="menu_button menu_button_icon interactable">
-          <i class="fa-solid fa-broom"></i>
-          <span>重建本地索引缓存</span>
+        <div id="st_sbm_rescan_btn" class="menu_button menu_button_icon interactable">
+          <i class="fa-solid fa-rotate-right"></i>
+          <span>重新扫描</span>
         </div>
       </div>
     </div>
@@ -67,10 +64,7 @@ function mountSettingsPanel() {
   container.appendChild(wrapper);
 
   wrapper.querySelector('#st_sbm_open_hall_btn')?.addEventListener('click', () => modal.open());
-  wrapper.querySelector('#st_sbm_clear_cache_btn')?.addEventListener('click', async () => {
-    await adapter.clearDigestCache();
-    modal.showToast('已清空本地存档摘要缓存，下次打开将重新扫描');
-  });
+  wrapper.querySelector('#st_sbm_rescan_btn')?.addEventListener('click', () => modal.open({ rescan: true }));
 }
 
 let slashRegistered = false;
