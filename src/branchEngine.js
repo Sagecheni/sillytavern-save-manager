@@ -100,6 +100,30 @@ function isUpstreamCandidate(candidateParent, child, lcp) {
 }
 
 /**
+ * 判断若将 childId 挂载到 parentId 之下是否会形成环路
+ */
+function wouldCreateCycle(childId, parentId, nodeById) {
+  let cursorId = parentId;
+  const visited = new Set([childId]);
+  while (cursorId) {
+    if (visited.has(cursorId)) return true;
+    visited.add(cursorId);
+    cursorId = nodeById.get(cursorId)?.parentId || null;
+  }
+  return false;
+}
+
+function isBetterParentCandidate(candidate, lcp, isExplicit, bestParent, bestLcp, bestIsExplicit) {
+  if (!bestParent) return true;
+  if (lcp !== bestLcp) return lcp > bestLcp;
+  if (isExplicit !== bestIsExplicit) return isExplicit && !bestIsExplicit;
+  if (candidate._createdTime !== bestParent._createdTime) {
+    return candidate._createdTime < bestParent._createdTime;
+  }
+  return candidate.chatId.localeCompare(bestParent.chatId) < 0;
+}
+
+/**
  * 为某个角色的所有存档构建分支森林与节点详情
  */
 export function buildCharacterBranchGraph(character, rawDigests = []) {
@@ -126,40 +150,30 @@ export function buildCharacterBranchGraph(character, rawDigests = []) {
   });
 
   const nodeById = new Map(nodes.map((n) => [n.chatId, n]));
+  // 按创建时间与 chatId 稳定排序，确保无论后端返回顺序如何，推导出的树结构完全一致
+  const orderedNodes = [...nodes].sort((a, b) => {
+    if (a._createdTime !== b._createdTime) return a._createdTime - b._createdTime;
+    return a.chatId.localeCompare(b.chatId);
+  });
 
-  // 第一步：为每个存档寻找最优上游父节点（LCP 最大，若并列优先官方 main_chat，再按更早创建时间）
-  for (const child of nodes) {
+  // 第一步（阶段 A）：优先建立所有酒馆原生显式父子关系（main_chat / bookmark_link），防止后续推断产生环路时误删原生关系
+  for (const child of orderedNodes) {
     if (child.floors.length === 0) continue;
 
     let bestParent = null;
     let bestLcp = 0;
-    let bestIsExplicit = false;
 
-    for (const candidate of nodes) {
+    for (const candidate of orderedNodes) {
       if (candidate.chatId === child.chatId || candidate.floors.length === 0) continue;
+      if (getExplicitParentRelation(candidate, child) !== 1) continue;
 
       const lcp = computeLcpFloors(candidate.floors, child.floors);
-      const explicitRel = getExplicitParentRelation(candidate, child);
-      const isExplicit = explicitRel === 1;
-      // 同一张角色卡的独立新聊天默认共用第 1 楼开场白；无显式 main_chat / bookmark_link 时要求至少共享 2 楼才视为分叉
-      const minLcp = isExplicit ? 1 : 2;
-      if (lcp < minLcp) continue;
-      if (!isUpstreamCandidate(candidate, child, lcp)) continue;
+      if (lcp < 1) continue;
+      if (wouldCreateCycle(child.chatId, candidate.chatId, nodeById)) continue;
 
-      const isBetter =
-        lcp > bestLcp ||
-        (lcp === bestLcp && isExplicit && !bestIsExplicit) ||
-        (lcp === bestLcp &&
-          isExplicit === bestIsExplicit &&
-          bestParent &&
-          (candidate._createdTime < bestParent._createdTime ||
-            (candidate._createdTime === bestParent._createdTime &&
-              candidate.chatId.localeCompare(bestParent.chatId) < 0)));
-
-      if (isBetter || !bestParent) {
+      if (isBetterParentCandidate(candidate, lcp, true, bestParent, bestLcp, true)) {
         bestParent = candidate;
         bestLcp = lcp;
-        bestIsExplicit = isExplicit;
       }
     }
 
@@ -169,8 +183,37 @@ export function buildCharacterBranchGraph(character, rawDigests = []) {
     }
   }
 
-  // 第二步：环路安全防护（防止极端手动篡改 metadata 造成循环指向）
-  for (const node of nodes) {
+  // 第一步（阶段 B）：为尚未确立显式父节点的存档补充不会成环的 LCP 推断关系
+  for (const child of orderedNodes) {
+    if (child.parentId || child.floors.length === 0) continue;
+
+    let bestParent = null;
+    let bestLcp = 0;
+
+    for (const candidate of orderedNodes) {
+      if (candidate.chatId === child.chatId || candidate.floors.length === 0) continue;
+
+      const lcp = computeLcpFloors(candidate.floors, child.floors);
+      // 同一张角色卡的独立新聊天默认共用第 1 楼开场白；无显式 main_chat / bookmark_link 时要求至少共享 2 楼才视为分叉
+      if (lcp < 2) continue;
+      if (!isUpstreamCandidate(candidate, child, lcp)) continue;
+      // 嵌套检查点（主线 -> 外层检查点 -> 内层检查点）下，禁止将主线反向挂到后代检查点之下成环
+      if (wouldCreateCycle(child.chatId, candidate.chatId, nodeById)) continue;
+
+      if (isBetterParentCandidate(candidate, lcp, false, bestParent, bestLcp, false)) {
+        bestParent = candidate;
+        bestLcp = lcp;
+      }
+    }
+
+    if (bestParent && bestLcp >= 2) {
+      child.parentId = bestParent.chatId;
+      child._lcpWithParent = bestLcp;
+    }
+  }
+
+  // 第二步：兜底环路安全防护（正常情况下阶段 A/B 已保证无环）
+  for (const node of orderedNodes) {
     const visited = new Set([node.chatId]);
     let cursor = node;
     while (cursor.parentId) {

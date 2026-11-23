@@ -11,6 +11,25 @@ import { stripJsonl, parseSillyTavernTimestamp } from './adapter.js';
 
 const PRESET_TAGS = ['主线', '高甜', '刀子', 'IF线', 'HE', 'BE', '待填坑'];
 
+const ICONS = {
+  branch: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>`,
+  branchLg: `<svg class="st-sbm-icon st-sbm-icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>`,
+  search: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`,
+  refresh: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>`,
+  close: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
+  users: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`,
+  star: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
+  starFill: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
+  list: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>`,
+  play: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>`,
+  check: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`,
+  pin: `<svg class="st-sbm-icon st-sbm-icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>`,
+  seed: `<svg class="st-sbm-icon st-sbm-icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/></svg>`,
+  tag: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>`,
+  note: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`,
+  chat: `<svg class="st-sbm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
+};
+
 function escapeHtml(str = '') {
   return String(str)
     .replace(/&/g, '&amp;')
@@ -69,16 +88,81 @@ export class SaveBranchManagerModal {
 
     this.pendingNoteSaves = new Map();
     this.pendingTitleSave = null;
+    this.searchRefreshTimer = null;
+    this.isJumping = false;
+    this.hasLoadedOverview = false;
     this.selectRequestSeq = 0;
     this.refreshRequestSeq = 0;
   }
 
-  flushPendingTitleSave({ skipCenterRender = false } = {}) {
+  scheduleSearchRefresh() {
+    if (!this.searchQuery) return;
+    clearTimeout(this.searchRefreshTimer);
+    this.searchRefreshTimer = setTimeout(() => {
+      this.searchRefreshTimer = null;
+      if (!this.backdropEl || this.backdropEl.hidden) return;
+      this.renderSidebar();
+      if (this.currentGraph && this.currentCharacter && this.currentGraph.characterAvatar === this.currentCharacter.avatar) {
+        this.renderCenterView();
+      }
+    }, 0);
+  }
+
+  patchSaveDisplayInPlace(avatar, chatId) {
+    if (!this.backdropEl) return;
+    const cleanId = stripJsonl(chatId);
+    const meta = this.adapter.getSaveMeta(avatar, cleanId);
+    const displayTitle = meta.customTitle || prettifySaveName(cleanId);
+
+    // 仅就地更新文本与标记，绝不重建交互容器 DOM，避免 blur/change 吞掉用户的第一次 click
+    const sidebarList = this.backdropEl.querySelector('[data-role="sidebar-list"]');
+    if (sidebarList) {
+      sidebarList.querySelectorAll('[data-bookmark-avatar]').forEach((item) => {
+        if (item.dataset?.bookmarkAvatar === avatar && stripJsonl(item.dataset?.bookmarkChat || '') === cleanId) {
+          const titleEl = item.querySelector?.('[data-role="bookmark-title"]');
+          if (titleEl) titleEl.textContent = `★ ${displayTitle}`;
+        }
+      });
+    }
+
+    if (this.currentCharacter?.avatar !== avatar) return;
+
+    const stage = this.backdropEl.querySelector('[data-role="stage"]');
+    if (stage) {
+      stage.querySelectorAll('[data-node-id]').forEach((card) => {
+        if (stripJsonl(card.dataset?.nodeId || '') !== cleanId) return;
+        const titleEl = card.querySelector?.('[data-role="node-title"]');
+        if (titleEl) titleEl.textContent = displayTitle;
+        const noteEl = card.querySelector?.('[data-role="node-note-icon"]');
+        if (noteEl) noteEl.textContent = meta.note ? '📝 ' : '';
+      });
+    }
+
+    const listView = this.backdropEl.querySelector('[data-role="list-view"]');
+    if (listView) {
+      listView.querySelectorAll('[data-list-node]').forEach((row) => {
+        if (stripJsonl(row.dataset?.listNode || '') !== cleanId) return;
+        const titleEl = row.querySelector?.('[data-role="list-title"]');
+        if (titleEl) titleEl.textContent = displayTitle;
+      });
+    }
+  }
+
+  flushPendingTitleSave({ skipCenterRender = false, preserveDom = true } = {}) {
     if (!this.pendingTitleSave) return;
     const { avatar, chatId, value } = this.pendingTitleSave;
     this.pendingTitleSave = null;
     this.adapter.updateSaveMeta(avatar, chatId, { customTitle: value });
-    this.syncOverviewMetaCounts(avatar);
+    this.syncOverviewMetaCounts(avatar, { renderSidebar: !preserveDom });
+
+    if (preserveDom) {
+      if (!skipCenterRender) {
+        this.patchSaveDisplayInPlace(avatar, chatId);
+      }
+      this.scheduleSearchRefresh();
+      return;
+    }
+
     if (
       !skipCenterRender &&
       this.currentCharacter &&
@@ -90,9 +174,9 @@ export class SaveBranchManagerModal {
     }
   }
 
-  flushPendingNoteSaves(targetKey = null, { skipCenterRender = false } = {}) {
+  flushPendingNoteSaves(targetKey = null, { skipCenterRender = false, preserveDom = true } = {}) {
     if (!targetKey) {
-      this.flushPendingTitleSave({ skipCenterRender });
+      this.flushPendingTitleSave({ skipCenterRender, preserveDom });
     }
     const entries = targetKey
       ? this.pendingNoteSaves.has(targetKey)
@@ -103,18 +187,30 @@ export class SaveBranchManagerModal {
     if (entries.length === 0) return;
 
     const touchedAvatars = new Set();
+    const touchedSaves = [];
     for (const [key, entry] of entries) {
       clearTimeout(entry.timer);
       this.pendingNoteSaves.delete(key);
       this.adapter.updateSaveMeta(entry.avatar, entry.chatId, { note: entry.value });
       touchedAvatars.add(entry.avatar);
+      touchedSaves.push({ avatar: entry.avatar, chatId: entry.chatId });
       if (entry.statusEl && entry.statusEl.isConnected) {
         entry.statusEl.textContent = '✓ 已自动保存';
       }
     }
 
     for (const avatar of touchedAvatars) {
-      this.syncOverviewMetaCounts(avatar);
+      this.syncOverviewMetaCounts(avatar, { renderSidebar: !preserveDom });
+    }
+
+    if (preserveDom) {
+      if (!skipCenterRender) {
+        for (const item of touchedSaves) {
+          this.patchSaveDisplayInPlace(item.avatar, item.chatId);
+        }
+      }
+      this.scheduleSearchRefresh();
+      return;
     }
 
     if (
@@ -138,9 +234,9 @@ export class SaveBranchManagerModal {
       <div class="st-sbm-modal" role="dialog" aria-modal="true" aria-label="全局存档与分支管理器">
         <header class="st-sbm-topbar">
           <div class="st-sbm-brand">
-            <div class="st-sbm-brand-icon">🌿</div>
-            <div>
-              <h2 class="st-sbm-brand-title">酒馆全局存档与分支大厅</h2>
+            <div class="st-sbm-brand-icon">${ICONS.branchLg}</div>
+            <div class="st-sbm-brand-text">
+              <h2 class="st-sbm-brand-title">全局存档与分支大厅</h2>
             </div>
             <span class="st-sbm-env-badge" data-role="env-badge">检测环境中</span>
           </div>
@@ -149,19 +245,19 @@ export class SaveBranchManagerModal {
 
           <div class="st-sbm-topbar-actions">
             <div class="st-sbm-search-wrap">
-              <span class="st-sbm-search-icon">🔍</span>
+              <span class="st-sbm-search-icon">${ICONS.search}</span>
               <input type="search" class="st-sbm-search-input" data-role="search-input" placeholder="搜角色、分支名、标签、备注或剧情..." />
             </div>
-            <button type="button" class="st-sbm-btn" data-action="refresh" title="强制重新扫描全部存档并刷新缓存">🔄 刷新扫描</button>
-            <button type="button" class="st-sbm-btn st-sbm-btn-icon" data-action="close" title="关闭 (Esc)">✕</button>
+            <button type="button" class="st-sbm-btn" data-action="refresh" title="强制重新扫描全部存档并刷新缓存">${ICONS.refresh}<span>刷新扫描</span></button>
+            <button type="button" class="st-sbm-btn st-sbm-btn-icon st-sbm-btn-close" data-action="close" title="关闭 (Esc)">${ICONS.close}</button>
           </div>
         </header>
 
         <div class="st-sbm-body">
           <aside class="st-sbm-sidebar">
             <div class="st-sbm-nav-tabs">
-              <button type="button" class="st-sbm-nav-tab is-active" data-tab="characters">👥 角色卡总览</button>
-              <button type="button" class="st-sbm-nav-tab" data-tab="bookmarks">⭐ 全局星标库</button>
+              <button type="button" class="st-sbm-nav-tab is-active" data-tab="characters">${ICONS.users}<span>角色卡总览</span></button>
+              <button type="button" class="st-sbm-nav-tab" data-tab="bookmarks">${ICONS.star}<span>全局星标库</span></button>
             </div>
             <div class="st-sbm-filter-bar" data-role="char-filters">
               <button type="button" class="st-sbm-filter-chip is-active" data-filter="all">全部</button>
@@ -179,12 +275,14 @@ export class SaveBranchManagerModal {
               </div>
               <div class="st-sbm-canvas-controls">
                 <div class="st-sbm-segmented">
-                  <button type="button" class="st-sbm-seg-btn is-active" data-view="tree">🌿 剧情分支树</button>
-                  <button type="button" class="st-sbm-seg-btn" data-view="list">📋 时间线列表</button>
+                  <button type="button" class="st-sbm-seg-btn is-active" data-view="tree">${ICONS.branch}<span>剧情分支树</span></button>
+                  <button type="button" class="st-sbm-seg-btn" data-view="list">${ICONS.list}<span>时间线列表</span></button>
                 </div>
-                <button type="button" class="st-sbm-btn st-sbm-btn-icon" data-action="zoom-out" title="缩小">−</button>
-                <button type="button" class="st-sbm-btn" data-action="zoom-fit" title="重置缩放并适应画布" data-role="zoom-label">100%</button>
-                <button type="button" class="st-sbm-btn st-sbm-btn-icon" data-action="zoom-in" title="放大">+</button>
+                <div class="st-sbm-zoom-group">
+                  <button type="button" class="st-sbm-btn" data-action="zoom-out" title="缩小">−</button>
+                  <button type="button" class="st-sbm-btn" data-action="zoom-fit" title="重置缩放并适应画布" data-role="zoom-label">100%</button>
+                  <button type="button" class="st-sbm-btn" data-action="zoom-in" title="放大">+</button>
+                </div>
               </div>
             </div>
 
@@ -316,12 +414,17 @@ export class SaveBranchManagerModal {
     badge.textContent = isLive ? '已连接酒馆实时数据' : '本地 Mock 预览模式';
     badge.classList.toggle('is-live', isLive);
 
-    // 重新打开大厅时始终重新拉取角色存档列表，确保新建/删除/更新的存档立即可见
-    await this.refreshAll({ refreshSummaries: true, forceDigests: false });
+    // 首次打开全量扫描；后续重开仅增量刷新当前活跃/变动过的角色，未变动角色直接复用缓存秒开
+    if (this.hasLoadedOverview) {
+      this.adapter.invalidateStaleSummaryTargets?.();
+    }
+    await this.refreshAll({ refreshSummaries: false, forceDigests: false });
   }
 
   close() {
-    this.flushPendingNoteSaves(null, { skipCenterRender: true });
+    clearTimeout(this.searchRefreshTimer);
+    this.searchRefreshTimer = null;
+    this.flushPendingNoteSaves(null, { skipCenterRender: true, preserveDom: true });
     if (this.backdropEl) {
       this.backdropEl.hidden = true;
     }
@@ -336,16 +439,38 @@ export class SaveBranchManagerModal {
   }
 
   async refreshAll(options = false) {
-    this.flushPendingNoteSaves(null, { skipCenterRender: true });
+    this.flushPendingNoteSaves(null, { skipCenterRender: true, preserveDom: true });
 
     const forceDigests = typeof options === 'boolean' ? options : Boolean(options?.forceDigests);
     const refreshSummaries = typeof options === 'boolean' ? options : Boolean(options?.refreshSummaries || forceDigests);
+    const isIncrementalReopen = this.hasLoadedOverview && !refreshSummaries && !forceDigests && this.overviewList.length > 0;
     const refreshId = ++this.refreshRequestSeq;
     // 使此前尚未返回的 selectCharacter 立即失效
     this.selectRequestSeq += 1;
 
+    // 保留重开/刷新前选中的角色与存档引用用于扫描完成后恢复，但立即清空旧画布与旧检查器，防止扫描期间误点已删除的存档
+    const prevAvatar = this.currentCharacter?.avatar || null;
+    const prevChatId = this.selectedChatId || null;
+    this.currentGraph = null;
+    this.selectedChatId = null;
+
     const sidebarList = this.backdropEl.querySelector('[data-role="sidebar-list"]');
-    sidebarList.innerHTML = `<div class="st-sbm-empty-state">正在扫描角色卡与存档索引...</div>`;
+    const stageEl = this.backdropEl.querySelector('[data-role="stage"]');
+    const listViewEl = this.backdropEl.querySelector('[data-role="list-view"]');
+    const subEl = this.backdropEl.querySelector('[data-role="canvas-subtitle"]');
+    if (isIncrementalReopen) {
+      sidebarList.classList?.add('is-syncing');
+    } else {
+      sidebarList.innerHTML = `<div class="st-sbm-empty-state">正在扫描角色卡与存档索引...</div>`;
+    }
+    if (subEl) subEl.textContent = isIncrementalReopen ? '正在增量同步活跃角色存档...' : '正在同步最新存档列表...';
+    if (stageEl) {
+      stageEl.innerHTML = `<div class="st-sbm-empty-state" style="width:420px;">${isIncrementalReopen ? '正在同步当前角色存档...' : '正在同步最新存档列表...'}</div>`;
+    }
+    if (listViewEl) {
+      listViewEl.innerHTML = `<div class="st-sbm-empty-state">${isIncrementalReopen ? '正在同步当前角色存档...' : '正在同步最新存档列表...'}</div>`;
+    }
+    this.renderInspector();
 
     let overview;
     try {
@@ -357,19 +482,23 @@ export class SaveBranchManagerModal {
       overview = await this.adapter.loadGlobalOverview({
         forceRefresh: refreshSummaries,
         onProgress: (done, total) => {
-          if (refreshId !== this.refreshRequestSeq) return;
+          if (refreshId !== this.refreshRequestSeq || isIncrementalReopen) return;
           sidebarList.innerHTML = `<div class="st-sbm-empty-state">正在扫描角色存档 (${done} / ${total})...</div>`;
         },
       });
     } catch (err) {
       if (refreshId !== this.refreshRequestSeq) return;
+      sidebarList.classList?.remove('is-syncing');
       sidebarList.innerHTML = `<div class="st-sbm-empty-state">扫描存档失败：${escapeHtml(err.message || String(err))}</div>`;
+      if (subEl) subEl.textContent = '扫描存档失败';
       return;
     }
 
     if (refreshId !== this.refreshRequestSeq) return;
 
+    sidebarList.classList?.remove('is-syncing');
     this.overviewList = overview;
+    this.hasLoadedOverview = true;
 
     // 排序：当前正在游玩的角色置顶，其次按最新存档时间降序、存档数降序
     this.overviewList.sort((a, b) => {
@@ -382,8 +511,6 @@ export class SaveBranchManagerModal {
     this.renderSidebar();
 
     // 默认选中先前查看的角色或首个有存档的角色；仅当仍为同一角色时沿用先前选中的存档 ID
-    const prevAvatar = this.currentCharacter?.avatar;
-    const prevChatId = this.selectedChatId;
     const targetChar =
       this.overviewList.find((c) => c.avatar === prevAvatar) ||
       this.overviewList.find((c) => c.isCurrentCharacter) ||
@@ -402,7 +529,7 @@ export class SaveBranchManagerModal {
     }
   }
 
-  syncOverviewMetaCounts(avatar) {
+  syncOverviewMetaCounts(avatar, { renderSidebar = true } = {}) {
     const charEntry = this.overviewList.find((c) => c.avatar === avatar);
     if (!charEntry) return;
     let starredCount = 0;
@@ -416,7 +543,9 @@ export class SaveBranchManagerModal {
     charEntry.starredCount = starredCount;
     charEntry.notedCount = notedCount;
     this.renderGlobalStats();
-    this.renderSidebar();
+    if (renderSidebar) {
+      this.renderSidebar();
+    }
   }
 
   renderGlobalStats() {
@@ -495,7 +624,7 @@ export class SaveBranchManagerModal {
               <img class="st-sbm-char-avatar" loading="lazy" src="${escapeHtml(ch.avatarSrc)}" data-fallback="${escapeHtml(ch.avatarFallbackSrc || '')}" alt="${escapeHtml(ch.name)}" />
               <div class="st-sbm-char-info">
                 <div class="st-sbm-char-name-row">
-                  <span class="st-sbm-char-name">★ ${escapeHtml(displayTitle)}</span>
+                  <span class="st-sbm-char-name" data-role="bookmark-title">★ ${escapeHtml(displayTitle)}</span>
                 </div>
                 <div class="st-sbm-char-meta">
                   <span>${escapeHtml(ch.name)}</span>
@@ -668,22 +797,32 @@ export class SaveBranchManagerModal {
       }
     }
 
+    const nodeMap = new Map(graph.nodes.map((n) => [n.chatId, n]));
     const svgPaths = graph.edges
       .map((edge) => {
         const hl = highlightedEdges.has(edge.id) ? 'is-highlighted' : '';
-        return `<path class="st-sbm-edge-path ${hl}" d="${edge.path}" />`;
+        const cp = edge.isCheckpointSnapshot ? 'is-checkpoint' : '';
+        const fromNode = nodeMap.get(edge.fromId);
+        const toNode = nodeMap.get(edge.toId);
+        const dots =
+          fromNode && toNode
+            ? `<circle class="st-sbm-edge-dot ${hl}" cx="${fromNode.x + LAYOUT_CONFIG.nodeWidth}" cy="${fromNode.y + Math.round(LAYOUT_CONFIG.nodeHeight / 2)}" r="3.2" />
+               <circle class="st-sbm-edge-dot ${hl}" cx="${toNode.x}" cy="${toNode.y + Math.round(LAYOUT_CONFIG.nodeHeight / 2)}" r="3.2" />`
+            : '';
+        return `<path class="st-sbm-edge-path ${cp} ${hl}" d="${edge.path}" />${dots}`;
       })
       .join('');
 
     const edgeBadges = graph.edges
       .map((edge) => {
         const hl = highlightedEdges.has(edge.id) ? 'is-highlighted' : '';
+        const cp = edge.isCheckpointSnapshot ? 'is-checkpoint' : '';
         const label = edge.isExactCopy
-          ? `📋 完整副本`
+          ? `完整副本`
           : edge.isCheckpointSnapshot
-          ? `📌 #${edge.branchFloor} 楼检查点`
-          : `⚡ #${edge.branchFloor} 楼分叉`;
-        return `<div class="st-sbm-edge-badge ${hl}" style="left:${edge.badgeX}px; top:${edge.badgeY}px;">${label}</div>`;
+          ? `#${edge.branchFloor} 楼检查点`
+          : `#${edge.branchFloor} 楼分叉`;
+        return `<div class="st-sbm-edge-badge ${cp} ${hl}" style="left:${edge.badgeX}px; top:${edge.badgeY}px;">${label}</div>`;
       })
       .join('');
 
@@ -706,11 +845,17 @@ export class SaveBranchManagerModal {
             previewText: node.lastFloorSnippet,
           });
 
+        const nodeRoleClass = !node.branchMoment
+          ? 'is-root'
+          : node.branchMoment.isCheckpointSnapshot
+          ? 'is-checkpoint'
+          : 'is-branch';
+
         const typePill = node.branchMoment
           ? node.branchMoment.isCheckpointSnapshot
-            ? `<span class="st-sbm-pill st-sbm-pill-branch">📌 #${node.branchMoment.branchFloor} 楼检查点</span>`
-            : `<span class="st-sbm-pill st-sbm-pill-branch">🔀 #${node.branchMoment.branchFloor} 楼分叉</span>`
-          : `<span class="st-sbm-pill st-sbm-pill-root">🌱 开局主干</span>`;
+            ? `<span class="st-sbm-pill st-sbm-pill-checkpoint">${ICONS.pin}#${node.branchMoment.branchFloor} 楼检查点</span>`
+            : `<span class="st-sbm-pill st-sbm-pill-branch">#${node.branchMoment.branchFloor} 楼分叉</span>`
+          : `<span class="st-sbm-pill st-sbm-pill-root">${ICONS.seed}开局主干</span>`;
 
         const activePill = node.isActive
           ? `<span class="st-sbm-pill st-sbm-pill-active">当前游玩</span>`
@@ -729,9 +874,9 @@ export class SaveBranchManagerModal {
           .join('');
 
         return `
-          <div class="st-sbm-node ${isSelected ? 'is-selected' : ''} ${node.isActive ? 'is-active-save' : ''}"
+          <div class="st-sbm-node ${nodeRoleClass} ${isSelected ? 'is-selected' : ''} ${node.isActive ? 'is-active-save' : ''}"
                data-node-id="${escapeHtml(node.chatId)}"
-               style="left:${node.x}px; top:${node.y}px; ${isSearchDimmed ? 'opacity:0.35;' : ''}"
+               style="left:${node.x}px; top:${node.y}px; ${isSearchDimmed ? 'opacity:0.32;' : ''}"
                title="单击查看分叉详情，双击直接切换到该存档">
             <div>
               <div class="st-sbm-node-header">
@@ -744,14 +889,14 @@ export class SaveBranchManagerModal {
                   ${meta.starred ? '★' : '☆'}
                 </button>
               </div>
-              <div class="st-sbm-node-title">${escapeHtml(title)}</div>
+              <div class="st-sbm-node-title" data-role="node-title">${escapeHtml(title)}</div>
             </div>
 
             <div class="st-sbm-node-snippet">${escapeHtml(summaryLine)}</div>
 
             <div class="st-sbm-node-footer">
               <div class="st-sbm-node-tags">${tagsHtml}</div>
-              <span>${meta.note ? '📝 ' : ''}${escapeHtml(formatShortTime(node.lastModified))}</span>
+              <span class="st-sbm-node-time"><span data-role="node-note-icon">${meta.note ? '📝 ' : ''}</span>${escapeHtml(formatShortTime(node.lastModified))}</span>
             </div>
           </div>
         `;
@@ -826,27 +971,27 @@ export class SaveBranchManagerModal {
           });
         const branchBadge = node.branchMoment
           ? node.branchMoment.isCheckpointSnapshot
-            ? `<span class="st-sbm-pill st-sbm-pill-branch">📌 #${node.branchMoment.branchFloor} 楼检查点</span>`
-            : `<span class="st-sbm-pill st-sbm-pill-branch">🔀 从 #${node.branchMoment.branchFloor} 楼分叉</span>`
-          : `<span class="st-sbm-pill st-sbm-pill-root">🌱 开局主干</span>`;
+            ? `<span class="st-sbm-pill st-sbm-pill-checkpoint">${ICONS.pin}#${node.branchMoment.branchFloor} 楼检查点</span>`
+            : `<span class="st-sbm-pill st-sbm-pill-branch">从 #${node.branchMoment.branchFloor} 楼分叉</span>`
+          : `<span class="st-sbm-pill st-sbm-pill-root">${ICONS.seed}开局主干</span>`;
 
         return `
-          <div class="st-sbm-list-row ${isSelected ? 'is-selected' : ''}" data-list-node="${escapeHtml(node.chatId)}" style="${isSearchDimmed ? 'opacity:0.35;' : ''}">
-            <div style="min-width:0; flex:1;">
-              <div style="display:flex; align-items:center; gap:8px; margin-bottom:5px;">
-                <span style="color:var(--sbm-amber);">${meta.starred ? '★' : ''}</span>
-                <strong style="font-size:14px;">${escapeHtml(title)}</strong>
+          <div class="st-sbm-list-row ${isSelected ? 'is-selected' : ''}" data-list-node="${escapeHtml(node.chatId)}" style="${isSearchDimmed ? 'opacity:0.32;' : ''}">
+            <div class="st-sbm-list-main">
+              <div class="st-sbm-list-head">
+                ${meta.starred ? '<span class="st-sbm-list-star">★</span>' : ''}
+                <strong class="st-sbm-list-title" data-role="list-title">${escapeHtml(title)}</strong>
                 ${branchBadge}
                 <span class="st-sbm-pill st-sbm-pill-floors">${node.floorCount} 楼</span>
                 ${node.isActive ? '<span class="st-sbm-pill st-sbm-pill-active">当前游玩</span>' : ''}
               </div>
-              <div style="font-size:12px; color:var(--sbm-text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+              <div class="st-sbm-list-snippet">
                 ${escapeHtml(node.lastFloorSnippet)}
               </div>
             </div>
-            <div style="text-align:right; font-size:12px; color:var(--sbm-text-muted); flex-shrink:0;">
+            <div class="st-sbm-list-meta">
               <div>${escapeHtml(formatShortTime(node.lastModified))}</div>
-              <div style="margin-top:4px;">${escapeHtml(node.fileSize || '')}</div>
+              ${node.fileSize ? `<div class="st-sbm-list-size">${escapeHtml(node.fileSize)}</div>` : ''}
             </div>
           </div>
         `;
@@ -944,7 +1089,7 @@ export class SaveBranchManagerModal {
 
       const childNextHtml = bm.childNextSnippet
         ? `<div class="st-sbm-diff-box is-child-next">
-             <div class="st-sbm-diff-label">⚡ 本分支新走向 (第 ${bm.branchFloor + 1} 楼 · ${escapeHtml(bm.childNextSpeaker)})</div>
+             <div class="st-sbm-diff-label">本分支新走向 (第 ${bm.branchFloor + 1} 楼 · ${escapeHtml(bm.childNextSpeaker)})</div>
              <div>${escapeHtml(bm.childNextSnippet)}</div>
            </div>`
         : `<div class="st-sbm-diff-box is-child-next">
@@ -959,8 +1104,8 @@ export class SaveBranchManagerModal {
       branchSectionHtml = `
         <section class="st-sbm-section">
           <div class="st-sbm-section-title">
-            <span>${bm.isCheckpointSnapshot ? `📌 检查点 · 第 ${bm.branchFloor} 楼` : `🔀 分叉时刻 · 第 ${bm.branchFloor} 楼`}</span>
-            <button type="button" class="st-sbm-link-btn" data-select-parent="${escapeHtml(parentNode.chatId)}">
+            <span class="st-sbm-section-heading">${bm.isCheckpointSnapshot ? `${ICONS.pin}<span>检查点 · 第 ${bm.branchFloor} 楼</span>` : `${ICONS.branch}<span>分叉时刻 · 第 ${bm.branchFloor} 楼</span>`}</span>
+            <button type="button" class="st-sbm-link-btn" data-select-parent="${escapeHtml(parentNode.chatId)}" title="跳转到父存档：${escapeHtml(parentTitle)}">
               源头：${escapeHtml(parentTitle)}
             </button>
           </div>
@@ -977,8 +1122,8 @@ export class SaveBranchManagerModal {
       branchSectionHtml = `
         <section class="st-sbm-section">
           <div class="st-sbm-section-title">
-            <span>🌱 开局起点主干</span>
-            <span>派生子分支：${node.childrenIds.length} 个</span>
+            <span class="st-sbm-section-heading">${ICONS.seed}<span>开局起点主干</span></span>
+            <span class="st-sbm-badge-mini">派生子分支 ${node.childrenIds.length}</span>
           </div>
           <div class="st-sbm-diff-box is-anchor">
             <div class="st-sbm-diff-label">开场白 (第 1 楼 · ${escapeHtml(firstFloor?.name || '开局')})</div>
@@ -1000,8 +1145,12 @@ export class SaveBranchManagerModal {
     const tailHtml = tailFloors
       .map(
         (f) => `
-        <div class="st-sbm-tail-msg">
-          <strong>#${f.floor} ${escapeHtml(f.name)}：</strong>${escapeHtml(f.snippet)}
+        <div class="st-sbm-tail-msg ${f.isUser ? 'is-user' : ''}">
+          <div class="st-sbm-tail-msg-head">
+            <strong>${escapeHtml(f.name)}</strong>
+            <span>#${f.floor}</span>
+          </div>
+          <div>${escapeHtml(f.snippet)}</div>
         </div>
       `
       )
@@ -1018,11 +1167,11 @@ export class SaveBranchManagerModal {
       </div>
 
       <div class="st-sbm-cta-row">
-        <button type="button" class="st-sbm-btn st-sbm-btn-primary st-sbm-cta-jump" data-role="jump-btn">
-          ${node.isActive ? '✅ 当前正在此存档中' : '🚀 切换到此存档继续游玩'}
+        <button type="button" class="st-sbm-btn ${node.isActive ? 'st-sbm-btn-active-save' : 'st-sbm-btn-primary'} st-sbm-cta-jump" data-role="jump-btn">
+          ${node.isActive ? `${ICONS.check}<span>当前正在此存档中</span>` : `${ICONS.play}<span>切换到此存档继续游玩</span>`}
         </button>
-        <button type="button" class="st-sbm-btn" data-role="insp-star-btn" title="收藏到全局星标库">
-          ${meta.starred ? '⭐ 已星标' : '☆ 星标'}
+        <button type="button" class="st-sbm-btn ${meta.starred ? 'st-sbm-btn-star-active' : ''}" data-role="insp-star-btn" title="收藏到全局星标库">
+          ${meta.starred ? `${ICONS.starFill}<span>已星标</span>` : `${ICONS.star}<span>星标</span>`}
         </button>
       </div>
 
@@ -1030,7 +1179,7 @@ export class SaveBranchManagerModal {
 
       <section class="st-sbm-section">
         <div class="st-sbm-section-title">
-          <span>🏷️ 分支标签</span>
+          <span class="st-sbm-section-heading">${ICONS.tag}<span>分支标签</span></span>
         </div>
         <div class="st-sbm-tags-wrap">${tagsChipsHtml}</div>
         <div class="st-sbm-custom-tag-row">
@@ -1041,17 +1190,19 @@ export class SaveBranchManagerModal {
 
       <section class="st-sbm-section">
         <div class="st-sbm-section-title">
-          <span>📝 剧情进度备注</span>
-          <span data-role="save-status" style="font-weight:400; font-size:11px; color:var(--sbm-text-muted);">自动保存</span>
+          <span class="st-sbm-section-heading">${ICONS.note}<span>剧情进度备注</span></span>
+          <span data-role="save-status" class="st-sbm-save-status">自动保存</span>
         </div>
         <textarea class="st-sbm-note-textarea" data-role="note-input" placeholder="记录这条分支的攻略路线、世界书开关状态或待填的坑...">${escapeHtml(meta.note)}</textarea>
       </section>
 
       <section class="st-sbm-section">
         <div class="st-sbm-section-title">
-          <span>💬 存档末尾进度预览</span>
+          <span class="st-sbm-section-heading">${ICONS.chat}<span>存档末尾进度预览</span></span>
         </div>
-        ${tailHtml || '<div style="font-size:12px;color:var(--sbm-text-muted);">暂无聊天记录</div>'}
+        <div class="st-sbm-tail-list">
+          ${tailHtml || '<div style="font-size:12px;color:var(--sbm-text-muted);">暂无聊天记录</div>'}
+        </div>
       </section>
     `;
 
@@ -1071,19 +1222,19 @@ export class SaveBranchManagerModal {
         chatId: node.chatId,
         value: titleInput.value.trim(),
       };
-      this.flushPendingNoteSaves(noteSaveKey, { skipCenterRender: true });
-      this.flushPendingTitleSave();
+      this.flushPendingNoteSaves(noteSaveKey, { skipCenterRender: true, preserveDom: true });
+      this.flushPendingTitleSave({ preserveDom: true });
     });
     titleInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        titleInput.blur?.();
         this.pendingTitleSave = {
           avatar,
           chatId: node.chatId,
           value: titleInput.value.trim(),
         };
-        this.flushPendingTitleSave();
+        this.flushPendingTitleSave({ preserveDom: true });
+        titleInput.blur?.();
       }
     });
 
@@ -1166,28 +1317,38 @@ export class SaveBranchManagerModal {
       });
     });
     noteInput.addEventListener('blur', () => {
-      this.flushPendingNoteSaves(noteSaveKey);
+      this.flushPendingNoteSaves(noteSaveKey, { preserveDom: true });
     });
   }
 
   async handleJump(chatId, characterOverride = null) {
     const targetCharacter = characterOverride || this.currentCharacter;
-    if (!targetCharacter) return;
+    const cleanChatId = stripJsonl(chatId);
+    if (!targetCharacter || !cleanChatId) return;
     if (
-      this.currentGraph?.characterAvatar &&
-      this.currentGraph.characterAvatar !== targetCharacter.avatar
+      !this.currentGraph ||
+      (this.currentGraph.characterAvatar && this.currentGraph.characterAvatar !== targetCharacter.avatar) ||
+      !this.currentGraph.nodes.some((n) => n.chatId === cleanChatId)
     ) {
       return;
     }
-    this.flushPendingNoteSaves(null, { skipCenterRender: true });
+    if (this.isJumping) {
+      this.showToast('正在切换存档，请稍候...');
+      return;
+    }
+
+    this.flushPendingNoteSaves(null, { skipCenterRender: true, preserveDom: true });
+    this.isJumping = true;
     try {
-      await this.adapter.jumpToSave(targetCharacter, chatId);
-      const meta = this.adapter.getSaveMeta(targetCharacter.avatar, chatId);
-      const label = meta.customTitle || prettifySaveName(chatId);
+      await this.adapter.jumpToSave(targetCharacter, cleanChatId);
+      const meta = this.adapter.getSaveMeta(targetCharacter.avatar, cleanChatId);
+      const label = meta.customTitle || prettifySaveName(cleanChatId);
       this.showToast(`已切换至「${targetCharacter.name} · ${label}」`);
       this.close();
     } catch (err) {
       this.showToast(`切换存档失败：${err.message}`);
+    } finally {
+      this.isJumping = false;
     }
   }
 }

@@ -620,4 +620,528 @@ assert.equal(jsonlParsed.length, 2, '应兼容逐行 JSONL 文本格式');
   }
 }
 
+// 13. [复查 P1 #1] 并发重叠跳转必须严格串行化，旧请求绝不能在错误角色下打开存档
+{
+  const prevWindow = globalThis.window;
+  let releaseSelectA;
+  const openEvents = [];
+  const mockCtx = {
+    characterId: '0',
+    chatId: 'init_chat',
+    groupId: null,
+    characters: [
+      { name: 'CharA', avatar: 'a.png', chat: 'a_init' },
+      { name: 'CharB', avatar: 'b.png', chat: 'b_init' },
+    ],
+    getRequestHeaders: () => ({}),
+    selectCharacterById: async (id) => {
+      if (id === '0') {
+        await new Promise((r) => {
+          releaseSelectA = r;
+        });
+      }
+      mockCtx.characterId = String(id);
+      mockCtx.chatId = mockCtx.characters[Number(id)].chat;
+    },
+    openCharacterChat: async (chatId) => {
+      const activeIdx = Number(mockCtx.characterId);
+      openEvents.push({ charId: activeIdx, chatId });
+      mockCtx.characters[activeIdx].chat = chatId;
+      mockCtx.chatId = chatId;
+    },
+  };
+  // 初始在角色 1，让跳到角色 0（A）必须经过 selectCharacterById
+  mockCtx.characterId = '1';
+  globalThis.window = { SillyTavern: { getContext: () => mockCtx } };
+
+  try {
+    const liveAdapter = new SaveManagerAdapter({ switchVerifyTimeoutMs: 100, switchPollIntervalMs: 15 });
+    const jumpA = liveAdapter.jumpToSave({ id: 0, name: 'CharA', avatar: 'a.png' }, 'a_target');
+    await new Promise((r) => setTimeout(r, 15));
+    // A 尚在 selectCharacterById 等待时，立刻发起跳向 B 的请求
+    const jumpB = liveAdapter.jumpToSave({ id: 1, name: 'CharB', avatar: 'b.png' }, 'b_target');
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(openEvents.length, 0, 'A 未完成前 B 不应抢先写入会话');
+
+    releaseSelectA();
+    await Promise.all([jumpA, jumpB]);
+
+    assert.deepEqual(
+      openEvents,
+      [
+        { charId: 0, chatId: 'a_target' },
+        { charId: 1, chatId: 'b_target' },
+      ],
+      '并发跳转应严格串行执行，每次 openCharacterChat 都落在对应角色下'
+    );
+    assert.equal(mockCtx.characters[0].chat, 'a_target');
+    assert.equal(mockCtx.characters[1].chat, 'b_target');
+  } finally {
+    globalThis.window = prevWindow;
+  }
+}
+
+// 14. [复查 P1 #2] 嵌套检查点（5楼主线 -> 4楼外层检查点 -> 2楼内层检查点）在任意输入顺序下都不能反转主线
+{
+  const makeMsg = (i, text) => ({ name: i % 2 ? 'C' : 'U', is_user: i % 2 === 0, mes: text });
+  const mainDigest = {
+    chatId: 'main_5f',
+    ...compactChatLines([
+      { create_date: '2026-11-20 10:00:00', chat_metadata: {} },
+      makeMsg(1, '开场'),
+      makeMsg(2, '二楼'),
+      makeMsg(3, '三楼'),
+      makeMsg(4, '四楼'),
+      makeMsg(5, '五楼主线'),
+    ]),
+  };
+  const outerCp = {
+    chatId: 'outer_cp_4f',
+    ...compactChatLines([
+      { create_date: '2026-11-20 10:10:00', chat_metadata: { main_chat: 'main_5f' } },
+      makeMsg(1, '开场'),
+      makeMsg(2, '二楼'),
+      makeMsg(3, '三楼'),
+      makeMsg(4, '四楼'),
+    ]),
+  };
+  const innerCp = {
+    chatId: 'inner_cp_2f',
+    ...compactChatLines([
+      { create_date: '2026-11-20 10:20:00', chat_metadata: { main_chat: 'outer_cp_4f' } },
+      makeMsg(1, '开场'),
+      makeMsg(2, '二楼'),
+    ]),
+  };
+
+  const permutations = [
+    [mainDigest, outerCp, innerCp],
+    [mainDigest, innerCp, outerCp],
+    [outerCp, mainDigest, innerCp],
+    [outerCp, innerCp, mainDigest],
+    [innerCp, mainDigest, outerCp],
+    [innerCp, outerCp, mainDigest],
+  ];
+
+  for (const perm of permutations) {
+    const graph = buildCharacterBranchGraph({ avatar: 'c.png', activeChatId: 'main_5f' }, perm);
+    const m = graph.nodes.find((n) => n.chatId === 'main_5f');
+    const o = graph.nodes.find((n) => n.chatId === 'outer_cp_4f');
+    const i = graph.nodes.find((n) => n.chatId === 'inner_cp_2f');
+    assert.equal(m.parentId, null, '任意顺序下主线都必须是根节点');
+    assert.equal(o.parentId, 'main_5f', '外层检查点必须挂在主线下');
+    assert.equal(i.parentId, 'outer_cp_4f', '内层检查点必须挂在外层检查点下');
+  }
+}
+
+// 15. [复查 P1 #3] IndexedDB 升级触发 onblocked 时应立即降级绕过缓存，不阻塞加载
+{
+  const prevIndexedDB = globalThis.indexedDB;
+  let openCalls = 0;
+  let closedByVersionChange = false;
+  globalThis.indexedDB = {
+    open() {
+      openCalls += 1;
+      const req = {};
+      if (openCalls === 1) {
+        setTimeout(() => req.onblocked?.(), 5);
+      } else {
+        const fakeDb = {
+          close() {
+            closedByVersionChange = true;
+          },
+        };
+        setTimeout(() => {
+          req.result = fakeDb;
+          req.onsuccess?.();
+        }, 5);
+      }
+      return req;
+    },
+  };
+
+  try {
+    const idbAdapter = new SaveManagerAdapter({ idbOpenTimeoutMs: 200 });
+    const db1 = await idbAdapter.digestCache.open();
+    assert.equal(db1, null, 'onblocked 触发后应立刻返回 null 绕过本地缓存');
+    // 解除阻塞后应能重新建立连接，并在收到 versionchange 时主动关闭连接
+    const db2 = await idbAdapter.digestCache.open();
+    assert.ok(db2, '旧标签页关闭后下一次应可正常打开新版 IndexedDB');
+    db2.onversionchange?.();
+    assert.equal(closedByVersionChange, true, '收到 onversionchange 时应主动关闭连接避免阻塞后续升级');
+  } finally {
+    globalThis.indexedDB = prevIndexedDB;
+  }
+}
+
+// 16. [复查 P2 #4] 强制刷新与并发请求竞态：旧响应返回后不得覆盖新缓存（楼层缓存 & 列表缓存）
+{
+  const prevWindow = globalThis.window;
+  const prevFetch = globalThis.fetch;
+  let resolveSlowSummary;
+  let resolveSlowDigest;
+  let summaryCall = 0;
+  let digestCall = 0;
+
+  const mockCtx = {
+    characterId: '0',
+    chatId: 'other_active',
+    groupId: null,
+    characters: [{ name: 'CharA', avatar: 'a.png', chat: 'other_active' }],
+    getRequestHeaders: () => ({}),
+  };
+  globalThis.window = { SillyTavern: { getContext: () => mockCtx } };
+  globalThis.fetch = async (url) => {
+    if (url === 'api/characters/chats') {
+      summaryCall += 1;
+      if (summaryCall === 1) {
+        return new Promise((resolve) => {
+          resolveSlowSummary = () =>
+            resolve({
+              ok: true,
+              json: async () => [{ file_name: 'old_only.jsonl', file_size: '1KB', chat_items: 1, last_mes: '2026-11-20', mes: 'old' }],
+            });
+        });
+      }
+      return {
+        ok: true,
+        json: async () => [
+          { file_name: 'old_only.jsonl', file_size: '1KB', chat_items: 1, last_mes: '2026-11-20', mes: 'old' },
+          { file_name: 'new_save.jsonl', file_size: '2KB', chat_items: 2, last_mes: '2026-11-23', mes: 'new' },
+        ],
+      };
+    }
+    if (url === 'api/chats/get') {
+      digestCall += 1;
+      if (digestCall === 1) {
+        return new Promise((resolve) => {
+          resolveSlowDigest = () =>
+            resolve({
+              ok: true,
+              text: async () => JSON.stringify([{ chat_metadata: {} }, { name: 'C', is_user: false, mes: '旧楼层内容_OLD' }]),
+            });
+        });
+      }
+      return {
+        ok: true,
+        text: async () => JSON.stringify([{ chat_metadata: {} }, { name: 'C', is_user: false, mes: '新楼层内容_NEW' }]),
+      };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  try {
+    const liveAdapter = new SaveManagerAdapter({ summaryCacheTtlMs: 60_000, digestCacheTtlMs: 60_000 });
+    const memStore = new Map();
+    liveAdapter.digestCache = {
+      async get(key, fp) {
+        const rec = memStore.get(key);
+        return rec && rec.fp === fp ? rec.digest : null;
+      },
+      async set(key, fp, digest) {
+        memStore.set(key, { fp, digest });
+      },
+      async delete(key) {
+        memStore.delete(key);
+      },
+      async clearAll() {
+        memStore.clear();
+      },
+    };
+
+    const charA = { id: 0, name: 'CharA', avatar: 'a.png', activeChatId: 'other_active' };
+
+    // 16A. 存档列表并发：慢请求先发、强制刷新后发先返，慢请求后返不得覆盖缓存
+    const pSumOld = liveAdapter.getCharacterChatSummaries(charA, false);
+    await new Promise((r) => setTimeout(r, 10));
+    const sumNew = await liveAdapter.getCharacterChatSummaries(charA, true);
+    assert.equal(sumNew.length, 2);
+    resolveSlowSummary();
+    await pSumOld;
+    const sumCached = await liveAdapter.getCharacterChatSummaries(charA, false);
+    assert.equal(sumCached.length, 2, '较早返回的旧存档列表不得覆盖较新的列表缓存');
+
+    // 16B. 楼层摘要并发：普通请求先发、强制刷新后发先返，旧请求后返不得覆盖新缓存
+    const targetSummary = {
+      chatId: 'save_x',
+      fileName: 'save_x.jsonl',
+      fileSize: '1KB',
+      messageCount: 1,
+      lastModified: '2026-11-23T10:00:00Z',
+      previewText: 'same',
+    };
+    const pDigOld = liveAdapter.getCharacterChatDigests(charA, [targetSummary], false);
+    await new Promise((r) => setTimeout(r, 10));
+    await liveAdapter.clearDigestCache();
+    const digNew = await liveAdapter.getCharacterChatDigests(charA, [targetSummary], true);
+    assert.ok(digNew[0].floors[0].snippet.includes('NEW'));
+    resolveSlowDigest();
+    await pDigOld;
+
+    const digNext = await liveAdapter.getCharacterChatDigests(charA, [targetSummary], false);
+    assert.ok(digNext[0].floors[0].snippet.includes('NEW'), '强制刷新后旧请求晚返回不得把楼层缓存回写为旧数据');
+  } finally {
+    globalThis.window = prevWindow;
+    globalThis.fetch = prevFetch;
+  }
+}
+
+// 17 & 18. [复查 P2 #5 & #6] 重开大厅扫描期间禁止误点旧存档 + 备注失焦/别名提交不销毁侧栏和画布交互节点
+{
+  const prevDocument = globalThis.document;
+  const prevWindow = globalThis.window;
+  const prevRAF = globalThis.requestAnimationFrame;
+
+  class TrackingElement {
+    constructor(role = '') {
+      this.role = role;
+      this.hidden = false;
+      this.textContent = '';
+      this.value = '';
+      this.dataset = {};
+      this.style = {};
+      this.isConnected = true;
+      this.clientWidth = 800;
+      this.clientHeight = 600;
+      this._innerHTML = '';
+      this.innerHTMLWriteCount = 0;
+      this.listeners = new Map();
+      this.classList = { toggle() {}, add() {}, remove() {} };
+      this.childrenByRole = new Map();
+    }
+    set innerHTML(val) {
+      this.innerHTMLWriteCount += 1;
+      this._innerHTML = String(val);
+      for (const child of this.childrenByRole.values()) child.isConnected = false;
+      this.childrenByRole.clear();
+    }
+    get innerHTML() {
+      return this._innerHTML;
+    }
+    addEventListener(type, fn) {
+      if (!this.listeners.has(type)) this.listeners.set(type, []);
+      this.listeners.get(type).push(fn);
+    }
+    dispatch(type, extra = {}) {
+      for (const fn of this.listeners.get(type) || []) {
+        fn({ preventDefault() {}, stopPropagation() {}, ...extra });
+      }
+    }
+    querySelector(sel) {
+      const m = sel.match(/\[data-role="([^"]+)"\]/);
+      if (m) {
+        const key = m[1];
+        if (!this.childrenByRole.has(key)) this.childrenByRole.set(key, new TrackingElement(key));
+        return this.childrenByRole.get(key);
+      }
+      return null;
+    }
+    querySelectorAll() {
+      return [];
+    }
+    appendChild() {}
+    remove() {}
+  }
+
+  globalThis.document = {
+    createElement: () => new TrackingElement(),
+    body: { appendChild() {} },
+    addEventListener() {},
+  };
+  globalThis.window = { addEventListener() {} };
+  globalThis.requestAnimationFrame = (cb) => cb();
+
+  try {
+    // 17. [P2 #5] 重开大厅扫描期间，旧检查器与旧画布应被立即清空，且 handleJump 拒绝跳转旧存档
+    let resolveOverview;
+    let jumpCalls = 0;
+    const reopenAdapter = new SaveManagerAdapter();
+    reopenAdapter.loadGlobalOverview = async () =>
+      new Promise((resolve) => {
+        resolveOverview = resolve;
+      });
+    reopenAdapter.jumpToSave = async () => {
+      jumpCalls += 1;
+    };
+
+    const modal = new SaveBranchManagerModal(reopenAdapter);
+    modal.backdropEl = new TrackingElement('backdrop');
+    modal.currentCharacter = { id: 0, name: 'CharA', avatar: 'a.png', saves: [] };
+    modal.currentGraph = {
+      characterAvatar: 'a.png',
+      nodes: [{ chatId: 'deleted_save', floorCount: 1, floors: [], childrenIds: [], parentId: null, branchMoment: null, x: 0, y: 0 }],
+      edges: [],
+      roots: [],
+      canvasWidth: 300,
+      canvasHeight: 200,
+    };
+    modal.selectedChatId = 'deleted_save';
+
+    const openPromise = modal.open();
+    assert.equal(modal.currentGraph, null, '重开大厅扫描开始时必须立即清空旧分支图');
+    assert.equal(modal.selectedChatId, null, '重开大厅扫描开始时必须立即清空旧选中存档');
+    await modal.handleJump('deleted_save', modal.currentCharacter);
+    assert.equal(jumpCalls, 0, '扫描期间不得允许跳向已删除的旧存档');
+
+    resolveOverview([]);
+    await openPromise;
+
+    // 18. [P2 #6] 备注失焦和别名提交时不得重建侧栏和画布 DOM（避免吞掉第一次 click）
+    const savedMeta = new Map();
+    const uiAdapter = new SaveManagerAdapter();
+    uiAdapter.getSaveMeta = (av, cid) => savedMeta.get(`${av}::${cid}`) || { starred: false, customTitle: '', tags: [], note: '', updatedAt: '' };
+    uiAdapter.updateSaveMeta = (av, cid, patch) => {
+      const next = { ...uiAdapter.getSaveMeta(av, cid), ...patch };
+      savedMeta.set(`${av}::${cid}`, next);
+      return next;
+    };
+
+    const editModal = new SaveBranchManagerModal(uiAdapter);
+    editModal.backdropEl = new TrackingElement('backdrop');
+    editModal.overviewList = [
+      {
+        id: 0,
+        name: 'CharA',
+        avatar: 'a.png',
+        saves: [{ chatId: 'save_1', messageCount: 2 }],
+        saveCount: 1,
+        starredCount: 0,
+        notedCount: 0,
+        latestTimestamp: 1,
+      },
+    ];
+    editModal.currentCharacter = editModal.overviewList[0];
+    editModal.currentGraph = {
+      characterAvatar: 'a.png',
+      nodes: [{ chatId: 'save_1', floorCount: 2, floors: [{ floor: 1, name: 'A', snippet: 'hi' }], childrenIds: [], parentId: null, branchMoment: null, x: 0, y: 0 }],
+      edges: [],
+      roots: [],
+      canvasWidth: 400,
+      canvasHeight: 300,
+    };
+    editModal.selectedChatId = 'save_1';
+    editModal.renderSidebar();
+    editModal.renderTreeStage();
+    editModal.renderInspector();
+
+    const sidebarEl = editModal.backdropEl.querySelector('[data-role="sidebar-list"]');
+    const stageEl = editModal.backdropEl.querySelector('[data-role="stage"]');
+    const inspEl = editModal.backdropEl.querySelector('[data-role="inspector"]');
+    const sidebarWritesBefore = sidebarEl.innerHTMLWriteCount;
+    const stageWritesBefore = stageEl.innerHTMLWriteCount;
+
+    const noteInput = inspEl.querySelector('[data-role="note-input"]');
+    noteInput.value = '刚输入的备注';
+    noteInput.dispatch('input');
+    noteInput.dispatch('blur');
+
+    assert.equal(uiAdapter.getSaveMeta('a.png', 'save_1').note, '刚输入的备注', '备注失焦时应已保存');
+    assert.equal(sidebarEl.innerHTMLWriteCount, sidebarWritesBefore, '备注失焦保存不得重写侧栏 DOM');
+    assert.equal(stageEl.innerHTMLWriteCount, stageWritesBefore, '备注失焦保存不得重写画布 DOM');
+
+    const titleInput = inspEl.querySelector('[data-role="custom-title"]');
+    titleInput.value = '新别名';
+    titleInput.dispatch('change');
+
+    assert.equal(uiAdapter.getSaveMeta('a.png', 'save_1').customTitle, '新别名', '别名提交时应已保存');
+    assert.equal(sidebarEl.innerHTMLWriteCount, sidebarWritesBefore, '别名提交不得重写侧栏 DOM');
+    assert.equal(stageEl.innerHTMLWriteCount, stageWritesBefore, '别名提交不得重写画布 DOM');
+
+    // 19. 验证重开大厅不再全量重扫所有角色卡：仅增量刷新当前活跃/变动过的角色，手动刷新才全量重扫
+    const prevFetch19 = globalThis.fetch;
+    const listeners19 = new Map();
+    const fetchedAvatars = [];
+    const mockCtx19 = {
+      characterId: '0',
+      chatId: 'a1',
+      groupId: null,
+      characters: [
+        { name: 'CharA', avatar: 'a.png', chat: 'a1' },
+        { name: 'CharB', avatar: 'b.png', chat: 'b1' },
+        { name: 'CharC', avatar: 'c.png', chat: 'c1' },
+      ],
+      getRequestHeaders: () => ({}),
+      event_types: {
+        CHAT_CREATED: 'chat_created',
+        CHAT_CHANGED: 'chat_changed',
+      },
+      eventSource: {
+        on(evt, fn) {
+          if (!listeners19.has(evt)) listeners19.set(evt, []);
+          listeners19.get(evt).push(fn);
+        },
+        emit(evt) {
+          for (const fn of listeners19.get(evt) || []) fn();
+        },
+      },
+    };
+    globalThis.window = {
+      addEventListener() {},
+      SillyTavern: { getContext: () => mockCtx19 },
+    };
+    globalThis.fetch = async (url, init) => {
+      const body = JSON.parse(init?.body || '{}');
+      if (url === 'api/characters/chats') {
+        fetchedAvatars.push(body.avatar_url);
+        return {
+          ok: true,
+          json: async () => [
+            {
+              file_name: `${body.avatar_url.replace('.png', '')}1.jsonl`,
+              file_size: '2KB',
+              chat_items: 1,
+              last_mes: '2026-11-23T10:00:00Z',
+              mes: 'hi',
+            },
+          ],
+        };
+      }
+      if (url === 'api/chats/get') {
+        return {
+          ok: true,
+          text: async () => JSON.stringify([{ chat_metadata: {} }, { name: 'C', is_user: false, mes: 'hi' }]),
+        };
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    };
+
+    try {
+      const incAdapter = new SaveManagerAdapter({ summaryCacheTtlMs: 300_000, digestCacheTtlMs: 300_000 });
+      const incModal = new SaveBranchManagerModal(incAdapter);
+      incModal.backdropEl = new TrackingElement('backdrop');
+
+      // 首次打开：扫描全部 3 个角色
+      await incModal.open();
+      assert.deepEqual([...fetchedAvatars].sort(), ['a.png', 'b.png', 'c.png'], '首次打开应扫描全部 3 个角色');
+
+      // 再次重开：未变动角色 B/C 命中缓存，仅增量刷新当前活跃角色 A
+      fetchedAvatars.length = 0;
+      await incModal.open();
+      assert.deepEqual(fetchedAvatars, ['a.png'], '重开大厅应仅增量刷新活跃角色 A，不重扫 B/C');
+
+      // 若期间切到 B 并新建存档触发事件，再切回 A 后重开，应仅刷新 A 和 B，C 仍命中缓存
+      mockCtx19.characterId = '1';
+      mockCtx19.chatId = 'b2';
+      mockCtx19.characters[1].chat = 'b2';
+      mockCtx19.eventSource.emit('chat_created');
+      mockCtx19.characterId = '0';
+      mockCtx19.chatId = 'a1';
+      fetchedAvatars.length = 0;
+      await incModal.open();
+      assert.deepEqual([...fetchedAvatars].sort(), ['a.png', 'b.png'], '有变动事件的角色 B 与活跃角色 A 同步刷新，未变动角色 C 不重扫');
+
+      // 手动点击“刷新扫描”（refreshAll(true)）：才强制全量重扫全部角色
+      fetchedAvatars.length = 0;
+      await incModal.refreshAll(true);
+      assert.deepEqual([...fetchedAvatars].sort(), ['a.png', 'b.png', 'c.png'], '手动刷新扫描应全量重扫全部角色');
+    } finally {
+      globalThis.fetch = prevFetch19;
+    }
+  } finally {
+    globalThis.document = prevDocument;
+    globalThis.window = prevWindow;
+    globalThis.requestAnimationFrame = prevRAF;
+  }
+}
+
 console.log('✅ 所有分支检测、三方对比、树布局及回归测试全部通过！');

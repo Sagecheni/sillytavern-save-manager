@@ -18,7 +18,7 @@ const IDB_NAME = 'st_save_branch_manager_cache_v1';
 const IDB_VERSION = 2;
 const IDB_STORE = 'chat_digests';
 const DIGEST_SCHEMA_VERSION = 'v2';
-const DEFAULT_SUMMARY_CACHE_TTL_MS = 15 * 1000;
+const DEFAULT_SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_DIGEST_CACHE_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_SWITCH_VERIFY_TIMEOUT_MS = 600;
 const DEFAULT_SWITCH_POLL_INTERVAL_MS = 40;
@@ -155,16 +155,50 @@ export function compactChatLines(rawLines = []) {
 }
 
 class IndexedDbDigestCache {
-  constructor() {
+  constructor(options = {}) {
     this.dbPromise = null;
+    this.openTimeoutMs = options.openTimeoutMs ?? 1500;
   }
 
   open() {
     if (typeof indexedDB === 'undefined') return Promise.resolve(null);
     if (this.dbPromise) return this.dbPromise;
-    this.dbPromise = new Promise((resolve) => {
+
+    const pending = new Promise((resolve) => {
+      let settled = false;
+      let timer = null;
+
+      const finish = (db, { clearOnNull = false } = {}) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        if (!db && clearOnNull && this.dbPromise === pending) {
+          this.dbPromise = null;
+        }
+        resolve(db);
+      };
+
+      const attachVersionChange = (db) => {
+        if (!db) return;
+        db.onversionchange = () => {
+          try {
+            db.close();
+          } catch {
+            // ignore close errors
+          }
+          this.dbPromise = null;
+        };
+      };
+
       try {
         const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+
+        if (typeof this.openTimeoutMs === 'number' && this.openTimeoutMs > 0) {
+          timer = setTimeout(() => {
+            finish(null, { clearOnNull: true });
+          }, this.openTimeoutMs);
+        }
+
         req.onupgradeneeded = (event) => {
           const db = req.result;
           if (!db.objectStoreNames.contains(IDB_STORE)) {
@@ -173,13 +207,30 @@ class IndexedDbDigestCache {
             req.transaction.objectStore(IDB_STORE).clear();
           }
         };
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => resolve(null);
+
+        req.onblocked = () => {
+          // 其他旧标签页持有旧版连接导致升级受阻时，立即降级绕过本地缓存，避免卡死存档树加载
+          finish(null, { clearOnNull: true });
+        };
+
+        req.onsuccess = () => {
+          const db = req.result;
+          attachVersionChange(db);
+          if (settled) {
+            this.dbPromise = Promise.resolve(db);
+            return;
+          }
+          finish(db);
+        };
+
+        req.onerror = () => finish(null, { clearOnNull: true });
       } catch {
-        resolve(null);
+        finish(null, { clearOnNull: true });
       }
     });
-    return this.dbPromise;
+
+    this.dbPromise = pending;
+    return pending;
   }
 
   async get(cacheKey, fingerprint, maxAgeMs = DEFAULT_DIGEST_CACHE_TTL_MS) {
@@ -261,10 +312,13 @@ class IndexedDbDigestCache {
 
 export class SaveManagerAdapter {
   constructor(options = {}) {
-    this.digestCache = new IndexedDbDigestCache();
+    this.digestCache = new IndexedDbDigestCache({ openTimeoutMs: options.idbOpenTimeoutMs });
     this.summaryCache = new Map();
     this.dirtyDigestKeys = new Set();
-    this.digestInvalidationVersion = new Map();
+    this.summaryEpoch = 0;
+    this.summaryRequestSeq = new Map();
+    this.digestEpoch = 0;
+    this.digestRequestSeq = new Map();
     this.lastKnownActiveChatByAvatar = new Map();
     this.summaryCacheTtlMs = options.summaryCacheTtlMs ?? DEFAULT_SUMMARY_CACHE_TTL_MS;
     this.digestCacheTtlMs = options.digestCacheTtlMs ?? DEFAULT_DIGEST_CACHE_TTL_MS;
@@ -272,6 +326,7 @@ export class SaveManagerAdapter {
     this.switchPollIntervalMs = options.switchPollIntervalMs ?? DEFAULT_SWITCH_POLL_INTERVAL_MS;
     this.eventsBound = false;
     this.lastObservedActiveChat = null;
+    this.jumpQueue = Promise.resolve();
     this.coreScriptModule = null;
     this.mockCharacters = structuredClone(MOCK_CHARACTERS);
     this.mockActiveCharId = 0;
@@ -291,18 +346,48 @@ export class SaveManagerAdapter {
 
   invalidateCharacterCache(avatar) {
     if (!avatar) return;
+    this.summaryRequestSeq.set(avatar, (this.summaryRequestSeq.get(avatar) || 0) + 1);
     this.summaryCache.delete(avatar);
   }
 
   invalidateChatCache(avatar, chatId) {
     if (!avatar) return;
+    this.summaryRequestSeq.set(avatar, (this.summaryRequestSeq.get(avatar) || 0) + 1);
     this.summaryCache.delete(avatar);
     const cleanChatId = stripJsonl(chatId || '');
     if (!cleanChatId) return;
     const cacheKey = `${avatar}::${cleanChatId}`;
     this.dirtyDigestKeys.add(cacheKey);
-    this.digestInvalidationVersion.set(cacheKey, (this.digestInvalidationVersion.get(cacheKey) || 0) + 1);
+    this.digestRequestSeq.set(cacheKey, (this.digestRequestSeq.get(cacheKey) || 0) + 1);
     void this.digestCache.delete(cacheKey);
+  }
+
+  /**
+   * 重开大厅前的增量失效：仅失效当前活跃角色、上次活跃角色以及 activeChatId 发生变更的角色，
+   * 其余未变动的角色卡继续复用内存摘要缓存，避免每次重开大厅都全量扫描所有角色卡。
+   */
+  invalidateStaleSummaryTargets() {
+    const activeRef = this.getActiveCharacterChatRef();
+    if (this.lastObservedActiveChat?.avatar) {
+      this.invalidateCharacterCache(this.lastObservedActiveChat.avatar);
+    }
+    if (activeRef?.avatar) {
+      this.invalidateCharacterCache(activeRef.avatar);
+      this.lastObservedActiveChat = activeRef;
+    }
+
+    const characters = this.getCharacters();
+    for (const ch of characters) {
+      if (!ch?.avatar) continue;
+      const prevActive = this.lastKnownActiveChatByAvatar.get(ch.avatar) || '';
+      if (ch.isCurrentCharacter) {
+        this.invalidateCharacterCache(ch.avatar);
+      } else if (prevActive && ch.activeChatId && prevActive !== ch.activeChatId) {
+        this.invalidateChatCache(ch.avatar, prevActive);
+        this.invalidateChatCache(ch.avatar, ch.activeChatId);
+        this.lastKnownActiveChatByAvatar.set(ch.avatar, ch.activeChatId);
+      }
+    }
   }
 
   /**
@@ -338,6 +423,8 @@ export class SaveManagerAdapter {
       'MESSAGE_SWIPED',
       'MESSAGE_DELETED',
       'CHARACTER_EDITED',
+      'CHARACTER_DELETED',
+      'CHARACTER_DUPLICATED',
     ];
 
     for (const name of eventNames) {
@@ -547,6 +634,10 @@ export class SaveManagerAdapter {
       return summaries;
     }
 
+    const epochBeforeFetch = this.summaryEpoch;
+    const reqSeq = (this.summaryRequestSeq.get(character.avatar) || 0) + 1;
+    this.summaryRequestSeq.set(character.avatar, reqSeq);
+
     const headers = await this.buildHeaders();
     const res = await fetch('api/characters/chats', {
       method: 'POST',
@@ -575,15 +666,19 @@ export class SaveManagerAdapter {
         };
       });
 
-    this.summaryCache.set(character.avatar, { data: summaries, fetchedAt: Date.now() });
+    // 仅当当前请求仍是最新的且未经历全局/单角色失效时才写入列表缓存，防止慢请求覆盖较新结果
+    if (this.summaryEpoch === epochBeforeFetch && this.summaryRequestSeq.get(character.avatar) === reqSeq) {
+      this.summaryCache.set(character.avatar, { data: summaries, fetchedAt: Date.now() });
+    }
     return summaries;
   }
 
   /**
-   * 并发受限地加载全部角色的存档汇总统计（防止角色过多打爆 NAS/远程后端）
+   * 并发受限地加载全部角色的存档汇总统计（命中有效缓存的角色不发起网络请求，防止重复打爆 NAS/远程后端）
    */
-  async loadGlobalOverview({ forceRefresh = false, concurrency = 5, onProgress = null } = {}) {
+  async loadGlobalOverview({ forceRefresh = false, concurrency = 6, onProgress = null } = {}) {
     if (forceRefresh) {
+      this.summaryEpoch += 1;
       this.summaryCache.clear();
     }
 
@@ -596,6 +691,9 @@ export class SaveManagerAdapter {
       while (cursor < characters.length) {
         const index = cursor++;
         const ch = characters[index];
+        if (ch.avatar && ch.activeChatId && !this.lastKnownActiveChatByAvatar.has(ch.avatar)) {
+          this.lastKnownActiveChatByAvatar.set(ch.avatar, ch.activeChatId);
+        }
         let summaries = [];
         try {
           summaries = await this.getCharacterChatSummaries(ch, forceRefresh);
@@ -693,7 +791,9 @@ export class SaveManagerAdapter {
           : null;
 
         if (!digest) {
-          const versionBeforeFetch = this.digestInvalidationVersion.get(cacheKey) || 0;
+          const epochBeforeFetch = this.digestEpoch;
+          const reqSeq = (this.digestRequestSeq.get(cacheKey) || 0) + 1;
+          this.digestRequestSeq.set(cacheKey, reqSeq);
           try {
             const res = await fetch('api/chats/get', {
               method: 'POST',
@@ -710,8 +810,8 @@ export class SaveManagerAdapter {
               const rawText = await res.text();
               const rawLines = parseChatResponsePayload(rawText);
               digest = compactChatLines(rawLines);
-              // 防止请求在途期间发生的编辑事件被旧响应覆盖：仅当失效版本号未变化时才清理脏标记并写回缓存
-              if ((this.digestInvalidationVersion.get(cacheKey) || 0) === versionBeforeFetch) {
+              // 防止旧请求在强制刷新或编辑事件之后返回并覆盖新缓存
+              if (this.digestEpoch === epochBeforeFetch && this.digestRequestSeq.get(cacheKey) === reqSeq) {
                 this.dirtyDigestKeys.delete(cacheKey);
                 await this.digestCache.set(cacheKey, fingerprint, digest);
               }
@@ -739,6 +839,8 @@ export class SaveManagerAdapter {
   }
 
   async clearDigestCache() {
+    this.summaryEpoch += 1;
+    this.digestEpoch += 1;
     this.summaryCache.clear();
     this.dirtyDigestKeys.clear();
     await this.digestCache.clearAll();
@@ -771,9 +873,16 @@ export class SaveManagerAdapter {
   }
 
   /**
-   * 跨角色一键切换存档
+   * 跨角色一键切换存档（全流程串行化，防止并发跳转交错导致在错误角色下打开存档）
    */
-  async jumpToSave(character, chatId) {
+  jumpToSave(character, chatId) {
+    const run = () => this._performJumpToSave(character, chatId);
+    const next = this.jumpQueue.then(run, run);
+    this.jumpQueue = next.catch(() => {});
+    return next;
+  }
+
+  async _performJumpToSave(character, chatId) {
     const targetChatId = stripJsonl(chatId);
 
     if (!this.isSillyTavern()) {
