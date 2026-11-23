@@ -15,10 +15,60 @@ import { MOCK_CHARACTERS, MOCK_CHATS_BY_AVATAR, MOCK_DEFAULT_METADATA } from './
 const EXTENSION_KEY = 'save_branch_manager';
 const LOCAL_META_KEY = 'st_save_branch_manager_meta_v1';
 const IDB_NAME = 'st_save_branch_manager_cache_v1';
+const IDB_VERSION = 2;
 const IDB_STORE = 'chat_digests';
+const DIGEST_SCHEMA_VERSION = 'v2';
+const DEFAULT_SUMMARY_CACHE_TTL_MS = 15 * 1000;
+const DEFAULT_DIGEST_CACHE_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_SWITCH_VERIFY_TIMEOUT_MS = 600;
+const DEFAULT_SWITCH_POLL_INTERVAL_MS = 40;
 
 export function stripJsonl(fileName = '') {
   return String(fileName).replace(/\.jsonl$/i, '').trim();
+}
+
+/**
+ * 兼容解析 SillyTavern 各类时间格式：
+ * - ISO / RFC2822 / Unix 时间戳
+ * - SillyTavern 默认格式：2026-11-23@18h20m12s / 2026-11-23 @18h 20m 12s 345ms
+ * - moment.js 格式：November 23, 2026 6:20pm / 2026年11月23日 18:20
+ */
+export function parseSillyTavernTimestamp(input) {
+  if (input === null || input === undefined || input === '') return NaN;
+  if (typeof input === 'number') {
+    return Number.isFinite(input) ? input : NaN;
+  }
+  const str = String(input).trim();
+  if (!str) return NaN;
+
+  if (/^\d{10,13}$/.test(str)) {
+    const num = Number(str);
+    return str.length === 10 ? num * 1000 : num;
+  }
+
+  const stMatch = str.match(
+    /(\d{4}-\d{2}-\d{2})\s*[@_T ]\s*(\d{1,2})h\s*(\d{1,2})m(?:\s*(\d{1,2})s)?(?:\s*(\d{1,3})ms)?/i
+  );
+  if (stMatch) {
+    const [, datePart, hh, mm, ss = '00', ms = '000'] = stMatch;
+    const iso = `${datePart}T${hh.padStart(2, '0')}:${mm.padStart(2, '0')}:${ss.padStart(2, '0')}.${ms.padStart(3, '0')}`;
+    const ts = Date.parse(iso);
+    if (!Number.isNaN(ts)) return ts;
+  }
+
+  const zhMatch = str.match(/(\d{4})年(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (zhMatch) {
+    const [, y, mo, d, hh, mm, ss = '00'] = zhMatch;
+    const iso = `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}T${hh.padStart(2, '0')}:${mm.padStart(2, '0')}:${ss.padStart(2, '0')}`;
+    const ts = Date.parse(iso);
+    if (!Number.isNaN(ts)) return ts;
+  }
+
+  const normalizedAmPm = str.replace(/(\d{1,2}:\d{2}(?::\d{2})?)\s*([ap]m)\b/i, '$1 $2');
+  const direct = Date.parse(normalizedAmPm);
+  if (!Number.isNaN(direct)) return direct;
+
+  return NaN;
 }
 
 /**
@@ -48,13 +98,17 @@ export function parseChatResponsePayload(rawText = '') {
 }
 
 function quickTextHash(str = '') {
-  let h = 0x811c9dc5;
   const normalized = String(str).replace(/\s+/g, ' ').trim();
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b1;
   for (let i = 0; i < normalized.length; i++) {
-    h ^= normalized.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
+    const ch = normalized.charCodeAt(i);
+    h1 ^= ch;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= ch + ((i & 0xff) << 1);
+    h2 = Math.imul(h2, 0x85ebca6b);
   }
-  return (h >>> 0).toString(16).padStart(8, '0');
+  return `${(h1 >>> 0).toString(16).padStart(8, '0')}${(h2 >>> 0).toString(16).padStart(8, '0')}_${normalized.length}`;
 }
 
 /**
@@ -90,7 +144,8 @@ export function compactChatLines(rawLines = []) {
       isUser: Boolean(item.is_user),
       isSystem: Boolean(item.is_system),
       sendDate: item.send_date || '',
-      hash: quickTextHash(`${Boolean(item.is_user)}|${cleanMes.slice(0, 240)}`),
+      // 使用完整正文计算 64 位双哈希 + 长度，避免长消息在 240 字后分叉被误判为相同
+      hash: quickTextHash(`${Boolean(item.is_user)}|${Boolean(item.is_system)}|${rawMes}`),
       snippet: cleanMes.slice(0, 140),
       bookmarkLink: item.extra?.bookmark_link ? stripJsonl(item.extra.bookmark_link) : '',
     });
@@ -109,11 +164,13 @@ class IndexedDbDigestCache {
     if (this.dbPromise) return this.dbPromise;
     this.dbPromise = new Promise((resolve) => {
       try {
-        const req = indexedDB.open(IDB_NAME, 1);
-        req.onupgradeneeded = () => {
+        const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+        req.onupgradeneeded = (event) => {
           const db = req.result;
           if (!db.objectStoreNames.contains(IDB_STORE)) {
             db.createObjectStore(IDB_STORE, { keyPath: 'cacheKey' });
+          } else if (event.oldVersion < IDB_VERSION) {
+            req.transaction.objectStore(IDB_STORE).clear();
           }
         };
         req.onsuccess = () => resolve(req.result);
@@ -125,7 +182,7 @@ class IndexedDbDigestCache {
     return this.dbPromise;
   }
 
-  async get(cacheKey, fingerprint) {
+  async get(cacheKey, fingerprint, maxAgeMs = DEFAULT_DIGEST_CACHE_TTL_MS) {
     const db = await this.open();
     if (!db) return null;
     return new Promise((resolve) => {
@@ -134,7 +191,11 @@ class IndexedDbDigestCache {
         const req = tx.objectStore(IDB_STORE).get(cacheKey);
         req.onsuccess = () => {
           const record = req.result;
-          if (record && record.fingerprint === fingerprint && record.digest) {
+          const isFresh =
+            typeof maxAgeMs !== 'number' ||
+            maxAgeMs <= 0 ||
+            (typeof record?.savedAt === 'number' && Date.now() - record.savedAt < maxAgeMs);
+          if (record && record.fingerprint === fingerprint && record.digest && isFresh) {
             resolve(record.digest);
           } else {
             resolve(null);
@@ -167,6 +228,21 @@ class IndexedDbDigestCache {
     });
   }
 
+  async delete(cacheKey) {
+    const db = await this.open();
+    if (!db) return;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).delete(cacheKey);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      } catch {
+        resolve();
+      }
+    });
+  }
+
   async clearAll() {
     const db = await this.open();
     if (!db) return;
@@ -184,13 +260,95 @@ class IndexedDbDigestCache {
 }
 
 export class SaveManagerAdapter {
-  constructor() {
+  constructor(options = {}) {
     this.digestCache = new IndexedDbDigestCache();
     this.summaryCache = new Map();
+    this.dirtyDigestKeys = new Set();
+    this.digestInvalidationVersion = new Map();
+    this.lastKnownActiveChatByAvatar = new Map();
+    this.summaryCacheTtlMs = options.summaryCacheTtlMs ?? DEFAULT_SUMMARY_CACHE_TTL_MS;
+    this.digestCacheTtlMs = options.digestCacheTtlMs ?? DEFAULT_DIGEST_CACHE_TTL_MS;
+    this.switchVerifyTimeoutMs = options.switchVerifyTimeoutMs ?? DEFAULT_SWITCH_VERIFY_TIMEOUT_MS;
+    this.switchPollIntervalMs = options.switchPollIntervalMs ?? DEFAULT_SWITCH_POLL_INTERVAL_MS;
+    this.eventsBound = false;
+    this.lastObservedActiveChat = null;
     this.coreScriptModule = null;
     this.mockCharacters = structuredClone(MOCK_CHARACTERS);
     this.mockActiveCharId = 0;
     this.onMockSwitchCallbacks = [];
+  }
+
+  getActiveCharacterChatRef(ctx = this.getContext()) {
+    if (!ctx || ctx.groupId || !Array.isArray(ctx.characters)) return null;
+    if (ctx.characterId === undefined || ctx.characterId === null || ctx.characterId === '') return null;
+    const idx = Number(ctx.characterId);
+    if (Number.isNaN(idx) || idx < 0 || idx >= ctx.characters.length) return null;
+    const ch = ctx.characters[idx];
+    if (!ch?.avatar) return null;
+    const chatId = stripJsonl(ctx.chatId || ch.chat || '');
+    return { avatar: ch.avatar, chatId };
+  }
+
+  invalidateCharacterCache(avatar) {
+    if (!avatar) return;
+    this.summaryCache.delete(avatar);
+  }
+
+  invalidateChatCache(avatar, chatId) {
+    if (!avatar) return;
+    this.summaryCache.delete(avatar);
+    const cleanChatId = stripJsonl(chatId || '');
+    if (!cleanChatId) return;
+    const cacheKey = `${avatar}::${cleanChatId}`;
+    this.dirtyDigestKeys.add(cacheKey);
+    this.digestInvalidationVersion.set(cacheKey, (this.digestInvalidationVersion.get(cacheKey) || 0) + 1);
+    void this.digestCache.delete(cacheKey);
+  }
+
+  /**
+   * 监听 SillyTavern 聊天与消息生命周期事件，及时失效被编辑或切换的存档缓存
+   */
+  bindSillyTavernEvents() {
+    if (this.eventsBound) return false;
+    const ctx = this.getContext();
+    const eventSource = ctx?.eventSource;
+    const eventTypes = ctx?.event_types;
+    if (!eventSource || typeof eventSource.on !== 'function' || !eventTypes) return false;
+
+    this.lastObservedActiveChat = this.getActiveCharacterChatRef(ctx);
+
+    const invalidateActive = () => {
+      const current = this.getActiveCharacterChatRef();
+      if (this.lastObservedActiveChat) {
+        this.invalidateChatCache(this.lastObservedActiveChat.avatar, this.lastObservedActiveChat.chatId);
+      }
+      if (current) {
+        this.invalidateChatCache(current.avatar, current.chatId);
+        this.lastObservedActiveChat = current;
+      }
+    };
+
+    const eventNames = [
+      'CHAT_CHANGED',
+      'CHAT_CREATED',
+      'CHAT_DELETED',
+      'MESSAGE_SENT',
+      'MESSAGE_RECEIVED',
+      'MESSAGE_EDITED',
+      'MESSAGE_SWIPED',
+      'MESSAGE_DELETED',
+      'CHARACTER_EDITED',
+    ];
+
+    for (const name of eventNames) {
+      const evt = eventTypes[name];
+      if (evt) {
+        eventSource.on(evt, invalidateActive);
+      }
+    }
+
+    this.eventsBound = true;
+    return true;
   }
 
   isSillyTavern() {
@@ -322,7 +480,8 @@ export class SaveManagerAdapter {
   getCharacters() {
     const ctx = this.getContext();
     if (ctx && Array.isArray(ctx.characters)) {
-      const activeIdx = Number(ctx.characterId);
+      const hasActiveChar = ctx.characterId !== undefined && ctx.characterId !== null && ctx.characterId !== '';
+      const activeIdx = hasActiveChar ? Number(ctx.characterId) : -1;
       return ctx.characters.map((ch, idx) => {
         const rawAvatarUrl = ch.avatar ? `characters/${encodeURIComponent(ch.avatar)}` : '';
         const thumbUrl = ch.avatar
@@ -355,11 +514,18 @@ export class SaveManagerAdapter {
   }
 
   /**
-   * 获取指定角色的轻量存档摘要列表
+   * 获取指定角色的轻量存档摘要列表（带 TTL 过期机制）
    */
   async getCharacterChatSummaries(character, forceRefresh = false) {
-    if (!forceRefresh && this.summaryCache.has(character.avatar)) {
-      return this.summaryCache.get(character.avatar);
+    const cached = this.summaryCache.get(character.avatar);
+    const isFresh =
+      cached &&
+      typeof this.summaryCacheTtlMs === 'number' &&
+      this.summaryCacheTtlMs > 0 &&
+      Date.now() - cached.fetchedAt < this.summaryCacheTtlMs;
+
+    if (!forceRefresh && isFresh) {
+      return cached.data;
     }
 
     if (!this.isSillyTavern()) {
@@ -377,7 +543,7 @@ export class SaveManagerAdapter {
           previewText: lastLine ? String(lastLine.mes).slice(0, 120) : '',
         };
       });
-      this.summaryCache.set(character.avatar, summaries);
+      this.summaryCache.set(character.avatar, { data: summaries, fetchedAt: Date.now() });
       return summaries;
     }
 
@@ -405,10 +571,11 @@ export class SaveManagerAdapter {
           messageCount: Number(item.chat_items ?? item.mes_count ?? 0),
           lastModified: item.last_mes || '',
           previewText: item.mes ? String(item.mes).replace(/<[^>]*>/g, ' ').trim().slice(0, 120) : '',
+          rawLastMesHash: item.mes ? quickTextHash(String(item.mes)) : '',
         };
       });
 
-    this.summaryCache.set(character.avatar, summaries);
+    this.summaryCache.set(character.avatar, { data: summaries, fetchedAt: Date.now() });
     return summaries;
   }
 
@@ -444,7 +611,7 @@ export class SaveManagerAdapter {
           const meta = this.getSaveMeta(ch.avatar, s.chatId);
           if (meta.starred) starredCount += 1;
           if (meta.note || meta.tags.length > 0) notedCount += 1;
-          const ts = Date.parse(s.lastModified) || 0;
+          const ts = parseSillyTavernTimestamp(s.lastModified) || 0;
           if (ts > latestTime) latestTime = ts;
           return { ...s, meta };
         });
@@ -471,7 +638,7 @@ export class SaveManagerAdapter {
   }
 
   /**
-   * 获取指定角色下所有存档的紧凑楼层摘要（优先命中 IndexedDB 缓存）
+   * 获取指定角色下所有存档的紧凑楼层摘要（优先命中 IndexedDB 缓存；活跃存档、脏标记存档及超时缓存强制回源校验）
    */
   async getCharacterChatDigests(character, summaries, forceRefresh = false) {
     if (!this.isSillyTavern()) {
@@ -490,49 +657,90 @@ export class SaveManagerAdapter {
     }
 
     const headers = await this.buildHeaders();
-    const digests = [];
-
-    for (const summary of summaries) {
-      const cacheKey = `${character.avatar}::${summary.chatId}`;
-      const fingerprint = `${summary.lastModified}|${summary.fileSize}|${summary.messageCount}`;
-      let digest = !forceRefresh ? await this.digestCache.get(cacheKey, fingerprint) : null;
-
-      if (!digest) {
-        const res = await fetch('api/chats/get', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            ch_name: character.name,
-            file_name: summary.chatId,
-            avatar_url: character.avatar,
-          }),
-          cache: 'no-cache',
-        });
-
-        if (res.ok) {
-          const rawText = await res.text();
-          const rawLines = parseChatResponsePayload(rawText);
-          digest = compactChatLines(rawLines);
-          await this.digestCache.set(cacheKey, fingerprint, digest);
-        } else {
-          digest = { header: {}, floors: [] };
-        }
-      }
-
-      digests.push({
-        ...summary,
-        meta: this.getSaveMeta(character.avatar, summary.chatId),
-        header: digest.header,
-        floors: digest.floors,
-        messageCount: digest.floors.length || summary.messageCount,
-      });
+    const activeRef = this.getActiveCharacterChatRef();
+    const characterActiveChatId = stripJsonl(character.activeChatId || '');
+    const liveActiveChatId = activeRef && activeRef.avatar === character.avatar ? activeRef.chatId : '';
+    const observedActive = liveActiveChatId || characterActiveChatId;
+    const prevKnownActive = this.lastKnownActiveChatByAvatar.get(character.avatar) || '';
+    if (prevKnownActive && observedActive && prevKnownActive !== observedActive) {
+      this.invalidateChatCache(character.avatar, prevKnownActive);
     }
+    if (observedActive) {
+      this.lastKnownActiveChatByAvatar.set(character.avatar, observedActive);
+    }
+    const digests = new Array(summaries.length);
+    const concurrency = Math.min(4, Math.max(1, summaries.length));
+    let cursor = 0;
 
+    const worker = async () => {
+      while (cursor < summaries.length) {
+        const idx = cursor++;
+        const summary = summaries[idx];
+        const cleanChatId = stripJsonl(summary.chatId);
+        const cacheKey = `${character.avatar}::${cleanChatId}`;
+        const previewSig = summary.rawLastMesHash || quickTextHash(summary.previewText || '');
+        const fingerprint = `${DIGEST_SCHEMA_VERSION}|${summary.lastModified}|${summary.fileSize}|${summary.messageCount}|${previewSig}`;
+
+        // 活跃存档和已收到编辑/切换事件的脏存档绕过本地缓存，避免等长编辑早期消息导致读到旧摘要
+        const isActiveChat =
+          (characterActiveChatId && cleanChatId === characterActiveChatId) ||
+          (liveActiveChatId && cleanChatId === liveActiveChatId);
+        const isDirty = this.dirtyDigestKeys.has(cacheKey);
+        const shouldBypassCache = forceRefresh || isActiveChat || isDirty;
+
+        let digest = !shouldBypassCache
+          ? await this.digestCache.get(cacheKey, fingerprint, this.digestCacheTtlMs)
+          : null;
+
+        if (!digest) {
+          const versionBeforeFetch = this.digestInvalidationVersion.get(cacheKey) || 0;
+          try {
+            const res = await fetch('api/chats/get', {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                ch_name: character.name,
+                file_name: cleanChatId,
+                avatar_url: character.avatar,
+              }),
+              cache: 'no-cache',
+            });
+
+            if (res.ok) {
+              const rawText = await res.text();
+              const rawLines = parseChatResponsePayload(rawText);
+              digest = compactChatLines(rawLines);
+              // 防止请求在途期间发生的编辑事件被旧响应覆盖：仅当失效版本号未变化时才清理脏标记并写回缓存
+              if ((this.digestInvalidationVersion.get(cacheKey) || 0) === versionBeforeFetch) {
+                this.dirtyDigestKeys.delete(cacheKey);
+                await this.digestCache.set(cacheKey, fingerprint, digest);
+              }
+            } else {
+              digest = { header: {}, floors: [] };
+            }
+          } catch (err) {
+            console.warn(`[SaveManager] 拉取存档 ${cleanChatId} 失败:`, err);
+            digest = { header: {}, floors: [] };
+          }
+        }
+
+        digests[idx] = {
+          ...summary,
+          meta: this.getSaveMeta(character.avatar, cleanChatId),
+          header: digest.header,
+          floors: digest.floors,
+          messageCount: digest.floors.length || summary.messageCount,
+        };
+      }
+    };
+
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
     return digests;
   }
 
   async clearDigestCache() {
     this.summaryCache.clear();
+    this.dirtyDigestKeys.clear();
     await this.digestCache.clearAll();
   }
 
@@ -550,6 +758,16 @@ export class SaveManagerAdapter {
       chatId: found ? stripJsonl(found.file_name) : '',
       lines: found ? found.lines.slice(1) : [],
     };
+  }
+
+  async waitForCondition(predicate, { timeoutMs = this.switchVerifyTimeoutMs, intervalMs = this.switchPollIntervalMs } = {}) {
+    if (predicate()) return true;
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, Math.max(10, intervalMs)));
+      if (predicate()) return true;
+    }
+    return Boolean(predicate());
   }
 
   /**
@@ -573,20 +791,47 @@ export class SaveManagerAdapter {
     const ctx = this.getContext();
     const { selectCharacterById, openCharacterChat } = await this.getCoreScriptFunctions();
 
-    const currentCharIdx = Number(ctx?.characterId);
-    const needCharSwitch = currentCharIdx !== Number(character.id) || Boolean(ctx?.groupId);
+    let targetCharId = Number(character.id);
+    if (Array.isArray(ctx?.characters) && character.avatar) {
+      const liveIdx = ctx.characters.findIndex((c) => c && c.avatar === character.avatar);
+      if (liveIdx >= 0) {
+        targetCharId = liveIdx;
+      }
+    }
 
-    if (needCharSwitch) {
+    const isTargetCharacterActive = (context) => {
+      if (!context || context.groupId) return false;
+      if (context.characterId === undefined || context.characterId === null || context.characterId === '') {
+        return false;
+      }
+      const activeIdx = Number(context.characterId);
+      if (Number.isNaN(activeIdx) || activeIdx !== targetCharId) return false;
+      if (character.avatar && Array.isArray(context.characters)) {
+        const activeChar = context.characters[activeIdx];
+        if (activeChar?.avatar && activeChar.avatar !== character.avatar) return false;
+      }
+      return true;
+    };
+
+    if (!isTargetCharacterActive(ctx)) {
       if (typeof selectCharacterById !== 'function') {
         throw new Error('未找到 SillyTavern 的 selectCharacterById 方法，请检查酒馆版本');
       }
-      await selectCharacterById(String(character.id));
-      // 等待角色上下文切换稳定后再切换指定聊天存档
-      await new Promise((resolve) => setTimeout(resolve, 260));
+      await selectCharacterById(String(targetCharId));
+      const switched = await this.waitForCondition(() => isTargetCharacterActive(this.getContext()));
+      if (!switched) {
+        throw new Error(
+          `未能切换到角色「${character.name || character.avatar}」，酒馆可能正忙于生成回复或保存聊天，已中止打开存档`
+        );
+      }
     }
 
     const refreshedCtx = this.getContext();
-    const activeChatNow = stripJsonl(refreshedCtx?.characters?.[character.id]?.chat || '');
+    if (!isTargetCharacterActive(refreshedCtx)) {
+      throw new Error(`角色上下文与目标「${character.name || character.avatar}」不一致，已中止打开存档`);
+    }
+
+    const activeChatNow = stripJsonl(refreshedCtx?.chatId || refreshedCtx?.characters?.[targetCharId]?.chat || '');
     if (activeChatNow !== targetChatId) {
       if (typeof openCharacterChat === 'function') {
         await openCharacterChat(targetChatId);
@@ -595,9 +840,18 @@ export class SaveManagerAdapter {
       } else {
         throw new Error('未找到 SillyTavern 的 openCharacterChat 方法');
       }
+
+      const afterCtx = this.getContext();
+      if (!isTargetCharacterActive(afterCtx)) {
+        throw new Error('切换存档期间角色上下文发生变化，未能确认切换成功');
+      }
+      const switchedChat = stripJsonl(afterCtx?.chatId || afterCtx?.characters?.[targetCharId]?.chat || '');
+      if (switchedChat && switchedChat !== targetChatId) {
+        throw new Error(`酒馆未能打开存档「${targetChatId}」，可能正忙于生成回复或保存聊天，请稍后重试`);
+      }
     }
 
-    this.summaryCache.delete(character.avatar);
+    this.invalidateChatCache(character.avatar, targetChatId);
     return true;
   }
 }

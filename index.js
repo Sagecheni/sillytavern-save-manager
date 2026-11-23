@@ -113,12 +113,14 @@ function mountAllIntegrations() {
 function initExtension() {
   modal.mount();
   mountAllIntegrations();
+  adapter.bindSillyTavernEvents();
 
   // 兼容酒馆异步初始化：在 APP_READY 时补挂载一次，防止远程/慢速网络下菜单容器晚于扩展渲染
   const ctx = adapter.getContext();
   if (ctx?.eventSource && ctx?.event_types?.APP_READY) {
     ctx.eventSource.on(ctx.event_types.APP_READY, () => {
       mountAllIntegrations();
+      adapter.bindSillyTavernEvents();
     });
   }
 

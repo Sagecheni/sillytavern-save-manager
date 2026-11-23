@@ -7,7 +7,7 @@
  * 3. 计算从左到右的整洁树状图坐标（Reingold-Tilford 风格层次居中排版），无需依赖外部大型图形库。
  */
 
-import { stripJsonl } from './adapter.js';
+import { stripJsonl, parseSillyTavernTimestamp } from './adapter.js';
 
 export const LAYOUT_CONFIG = {
   nodeWidth: 280,
@@ -25,19 +25,14 @@ export const LAYOUT_CONFIG = {
 export function parseSaveCreatedTime(digest) {
   const headerDate = digest?.header?.create_date;
   if (headerDate) {
-    const parsed = Date.parse(headerDate.replace('@', ' '));
+    const parsed = parseSillyTavernTimestamp(headerDate);
     if (!Number.isNaN(parsed)) return parsed;
   }
 
-  const id = String(digest?.chatId || '');
-  const m = id.match(/(\d{4}-\d{2}-\d{2})[@_](\d{2})h(\d{2})m(?:(\d{2})s)?/i);
-  if (m) {
-    const [, datePart, hh, mm, ss = '00'] = m;
-    const parsed = Date.parse(`${datePart}T${hh}:${mm}:${ss}`);
-    if (!Number.isNaN(parsed)) return parsed;
-  }
+  const fromId = parseSillyTavernTimestamp(digest?.chatId || '');
+  if (!Number.isNaN(fromId)) return fromId;
 
-  const mod = Date.parse(digest?.lastModified || '');
+  const mod = parseSillyTavernTimestamp(digest?.lastModified || '');
   return Number.isNaN(mod) ? Number.MAX_SAFE_INTEGER : mod;
 }
 
@@ -54,25 +49,45 @@ export function computeLcpFloors(floorsA = [], floorsB = []) {
 }
 
 /**
+ * 判断两个存档间是否存在显式父子指向（优先 SillyTavern 原生 main_chat，其次楼层 bookmark_link）
+ * 返回值：1 表示 candidateParent 显式为 child 的父节点；-1 表示反向；0 表示无明确或冲突指向
+ */
+function getExplicitParentRelation(candidateParent, child) {
+  const childMain = stripJsonl(child.header?.chat_metadata?.main_chat || '');
+  const parentMain = stripJsonl(candidateParent.header?.chat_metadata?.main_chat || '');
+  const childPointsToParent = Boolean(childMain && childMain === candidateParent.chatId);
+  const parentPointsToChild = Boolean(parentMain && parentMain === child.chatId);
+
+  if (childPointsToParent && !parentPointsToChild) return 1;
+  if (parentPointsToChild && !childPointsToParent) return -1;
+
+  // 仅当双方均未声明 main_chat 时，回退使用楼层上的 bookmark_link（防止子分支继承主线的旧书签链接造成歧义）
+  if (!childMain && !parentMain) {
+    const parentBookmarksChild = candidateParent.floors.some((f) => f.bookmarkLink === child.chatId);
+    const childBookmarksParent = child.floors.some((f) => f.bookmarkLink === candidateParent.chatId);
+    if (parentBookmarksChild && !childBookmarksParent) return 1;
+    if (childBookmarksParent && !parentBookmarksChild) return -1;
+  }
+
+  return 0;
+}
+
+/**
  * 判断 candidateParent 在历史演化上是否位于 child 的上游
  */
 function isUpstreamCandidate(candidateParent, child, lcp) {
+  // 情况1：优先尊重酒馆原生 main_chat（以及无 main_chat 时的 bookmark_link）指向
+  // 这样主线推进超过检查点楼层后，原生检查点仍作为主线的子节点，而不会被反转成主线的父节点
+  const explicitRel = getExplicitParentRelation(candidateParent, child);
+  if (explicitRel === 1) return true;
+  if (explicitRel === -1) return false;
+
   const lenP = candidateParent.floors.length;
   const lenC = child.floors.length;
 
-  // 情况1：父存档恰好停在分叉楼层（检查点或主干阶段存档），子存档继续往后推进
+  // 情况2：无显式指向时，若一方恰好停在分叉楼层、另一方继续往后推进，短方视为阶段检查点/上游
   if (lenP === lcp && lenC > lcp) return true;
   if (lenC === lcp && lenP > lcp) return false;
-
-  // 情况2：双方都在分叉点后继续聊天（或完全同长副本），优先尊重酒馆原生 main_chat 指向
-  const childMain = stripJsonl(child.header?.chat_metadata?.main_chat || '');
-  const parentMain = stripJsonl(candidateParent.header?.chat_metadata?.main_chat || '');
-  if (childMain === candidateParent.chatId && parentMain !== child.chatId) {
-    return true;
-  }
-  if (parentMain === child.chatId && childMain !== candidateParent.chatId) {
-    return false;
-  }
 
   // 情况3：按创建时间先后决定谁是主干、谁是派生分支
   const timeP = candidateParent._createdTime;
@@ -116,7 +131,6 @@ export function buildCharacterBranchGraph(character, rawDigests = []) {
   for (const child of nodes) {
     if (child.floors.length === 0) continue;
 
-    const explicitMainId = stripJsonl(child.header?.chat_metadata?.main_chat || '');
     let bestParent = null;
     let bestLcp = 0;
     let bestIsExplicit = false;
@@ -125,14 +139,22 @@ export function buildCharacterBranchGraph(character, rawDigests = []) {
       if (candidate.chatId === child.chatId || candidate.floors.length === 0) continue;
 
       const lcp = computeLcpFloors(candidate.floors, child.floors);
-      if (lcp < 1) continue;
+      const explicitRel = getExplicitParentRelation(candidate, child);
+      const isExplicit = explicitRel === 1;
+      // 同一张角色卡的独立新聊天默认共用第 1 楼开场白；无显式 main_chat / bookmark_link 时要求至少共享 2 楼才视为分叉
+      const minLcp = isExplicit ? 1 : 2;
+      if (lcp < minLcp) continue;
       if (!isUpstreamCandidate(candidate, child, lcp)) continue;
 
-      const isExplicit = explicitMainId === candidate.chatId;
       const isBetter =
         lcp > bestLcp ||
         (lcp === bestLcp && isExplicit && !bestIsExplicit) ||
-        (lcp === bestLcp && isExplicit === bestIsExplicit && bestParent && candidate._createdTime < bestParent._createdTime);
+        (lcp === bestLcp &&
+          isExplicit === bestIsExplicit &&
+          bestParent &&
+          (candidate._createdTime < bestParent._createdTime ||
+            (candidate._createdTime === bestParent._createdTime &&
+              candidate.chatId.localeCompare(bestParent.chatId) < 0)));
 
       if (isBetter || !bestParent) {
         bestParent = candidate;
@@ -182,7 +204,8 @@ export function buildCharacterBranchGraph(character, rawDigests = []) {
       branchFloor: lcp,
       isExactCopy,
       isCheckpointContinuation: parent.floors.length === lcp && node.floors.length > lcp,
-      explicitLinked: stripJsonl(node.header?.chat_metadata?.main_chat || '') === parent.chatId,
+      isCheckpointSnapshot: node.floors.length === lcp && parent.floors.length > lcp,
+      explicitLinked: getExplicitParentRelation(parent, node) === 1,
       anchorSpeaker: anchorFloor?.name || '',
       anchorSnippet: anchorFloor?.snippet || '',
       parentNextSpeaker: parentNextFloor?.name || '',
@@ -266,6 +289,7 @@ function layoutForest(roots, nodeById, cfg = LAYOUT_CONFIG) {
         toId: child.chatId,
         branchFloor: child.branchMoment?.branchFloor || 1,
         isExactCopy: Boolean(child.branchMoment?.isExactCopy),
+        isCheckpointSnapshot: Boolean(child.branchMoment?.isCheckpointSnapshot),
         path: `M ${startX} ${startY} C ${midX} ${startY}, ${midX} ${endY}, ${endX} ${endY}`,
         badgeX: midX,
         badgeY: Math.round((startY + endY) / 2),

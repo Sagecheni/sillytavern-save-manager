@@ -7,7 +7,7 @@
  */
 
 import { buildCharacterBranchGraph, LAYOUT_CONFIG } from './branchEngine.js';
-import { stripJsonl } from './adapter.js';
+import { stripJsonl, parseSillyTavernTimestamp } from './adapter.js';
 
 const PRESET_TAGS = ['主线', '高甜', '刀子', 'IF线', 'HE', 'BE', '待填坑'];
 
@@ -16,7 +16,8 @@ function escapeHtml(str = '') {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function prettifySaveName(chatId = '') {
@@ -33,7 +34,7 @@ function prettifySaveName(chatId = '') {
 
 function formatShortTime(tsOrStr) {
   if (!tsOrStr) return '';
-  const ts = typeof tsOrStr === 'number' ? tsOrStr : Date.parse(tsOrStr);
+  const ts = parseSillyTavernTimestamp(tsOrStr);
   if (!ts || Number.isNaN(ts)) return '';
   const d = new Date(ts);
   const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -66,7 +67,65 @@ export class SaveBranchManagerModal {
     this.panStartX = 0;
     this.panStartY = 0;
 
-    this.noteSaveTimer = null;
+    this.pendingNoteSaves = new Map();
+    this.pendingTitleSave = null;
+    this.selectRequestSeq = 0;
+    this.refreshRequestSeq = 0;
+  }
+
+  flushPendingTitleSave({ skipCenterRender = false } = {}) {
+    if (!this.pendingTitleSave) return;
+    const { avatar, chatId, value } = this.pendingTitleSave;
+    this.pendingTitleSave = null;
+    this.adapter.updateSaveMeta(avatar, chatId, { customTitle: value });
+    this.syncOverviewMetaCounts(avatar);
+    if (
+      !skipCenterRender &&
+      this.currentCharacter &&
+      this.currentGraph &&
+      this.currentGraph.characterAvatar === this.currentCharacter.avatar &&
+      this.currentCharacter.avatar === avatar
+    ) {
+      this.renderCenterView();
+    }
+  }
+
+  flushPendingNoteSaves(targetKey = null, { skipCenterRender = false } = {}) {
+    if (!targetKey) {
+      this.flushPendingTitleSave({ skipCenterRender });
+    }
+    const entries = targetKey
+      ? this.pendingNoteSaves.has(targetKey)
+        ? [[targetKey, this.pendingNoteSaves.get(targetKey)]]
+        : []
+      : Array.from(this.pendingNoteSaves.entries());
+
+    if (entries.length === 0) return;
+
+    const touchedAvatars = new Set();
+    for (const [key, entry] of entries) {
+      clearTimeout(entry.timer);
+      this.pendingNoteSaves.delete(key);
+      this.adapter.updateSaveMeta(entry.avatar, entry.chatId, { note: entry.value });
+      touchedAvatars.add(entry.avatar);
+      if (entry.statusEl && entry.statusEl.isConnected) {
+        entry.statusEl.textContent = '✓ 已自动保存';
+      }
+    }
+
+    for (const avatar of touchedAvatars) {
+      this.syncOverviewMetaCounts(avatar);
+    }
+
+    if (
+      !skipCenterRender &&
+      this.currentCharacter &&
+      this.currentGraph &&
+      this.currentGraph.characterAvatar === this.currentCharacter.avatar &&
+      touchedAvatars.has(this.currentCharacter.avatar)
+    ) {
+      this.renderCenterView();
+    }
   }
 
   mount() {
@@ -250,16 +309,19 @@ export class SaveBranchManagerModal {
 
   async open() {
     this.mount();
+    this.adapter.bindSillyTavernEvents?.();
     this.backdropEl.hidden = false;
     const badge = this.backdropEl.querySelector('[data-role="env-badge"]');
     const isLive = this.adapter.isSillyTavern();
     badge.textContent = isLive ? '已连接酒馆实时数据' : '本地 Mock 预览模式';
     badge.classList.toggle('is-live', isLive);
 
-    await this.refreshAll(false);
+    // 重新打开大厅时始终重新拉取角色存档列表，确保新建/删除/更新的存档立即可见
+    await this.refreshAll({ refreshSummaries: true, forceDigests: false });
   }
 
   close() {
+    this.flushPendingNoteSaves(null, { skipCenterRender: true });
     if (this.backdropEl) {
       this.backdropEl.hidden = true;
     }
@@ -273,20 +335,41 @@ export class SaveBranchManagerModal {
     setTimeout(() => toast.remove(), 2200);
   }
 
-  async refreshAll(forceRefresh = false) {
+  async refreshAll(options = false) {
+    this.flushPendingNoteSaves(null, { skipCenterRender: true });
+
+    const forceDigests = typeof options === 'boolean' ? options : Boolean(options?.forceDigests);
+    const refreshSummaries = typeof options === 'boolean' ? options : Boolean(options?.refreshSummaries || forceDigests);
+    const refreshId = ++this.refreshRequestSeq;
+    // 使此前尚未返回的 selectCharacter 立即失效
+    this.selectRequestSeq += 1;
+
     const sidebarList = this.backdropEl.querySelector('[data-role="sidebar-list"]');
     sidebarList.innerHTML = `<div class="st-sbm-empty-state">正在扫描角色卡与存档索引...</div>`;
 
-    if (forceRefresh) {
-      await this.adapter.clearDigestCache();
+    let overview;
+    try {
+      if (forceDigests) {
+        await this.adapter.clearDigestCache();
+        if (refreshId !== this.refreshRequestSeq) return;
+      }
+
+      overview = await this.adapter.loadGlobalOverview({
+        forceRefresh: refreshSummaries,
+        onProgress: (done, total) => {
+          if (refreshId !== this.refreshRequestSeq) return;
+          sidebarList.innerHTML = `<div class="st-sbm-empty-state">正在扫描角色存档 (${done} / ${total})...</div>`;
+        },
+      });
+    } catch (err) {
+      if (refreshId !== this.refreshRequestSeq) return;
+      sidebarList.innerHTML = `<div class="st-sbm-empty-state">扫描存档失败：${escapeHtml(err.message || String(err))}</div>`;
+      return;
     }
 
-    this.overviewList = await this.adapter.loadGlobalOverview({
-      forceRefresh,
-      onProgress: (done, total) => {
-        sidebarList.innerHTML = `<div class="st-sbm-empty-state">正在扫描角色存档 (${done} / ${total})...</div>`;
-      },
-    });
+    if (refreshId !== this.refreshRequestSeq) return;
+
+    this.overviewList = overview;
 
     // 排序：当前正在游玩的角色置顶，其次按最新存档时间降序、存档数降序
     this.overviewList.sort((a, b) => {
@@ -298,8 +381,9 @@ export class SaveBranchManagerModal {
     this.renderGlobalStats();
     this.renderSidebar();
 
-    // 默认选中先前查看的角色或首个有存档的角色
+    // 默认选中先前查看的角色或首个有存档的角色；仅当仍为同一角色时沿用先前选中的存档 ID
     const prevAvatar = this.currentCharacter?.avatar;
+    const prevChatId = this.selectedChatId;
     const targetChar =
       this.overviewList.find((c) => c.avatar === prevAvatar) ||
       this.overviewList.find((c) => c.isCurrentCharacter) ||
@@ -307,7 +391,14 @@ export class SaveBranchManagerModal {
       null;
 
     if (targetChar) {
-      await this.selectCharacter(targetChar.avatar, this.selectedChatId, forceRefresh);
+      const preferredChatId = targetChar.avatar === prevAvatar ? prevChatId : null;
+      await this.selectCharacter(targetChar.avatar, preferredChatId, forceDigests);
+    } else {
+      this.currentCharacter = null;
+      this.currentGraph = null;
+      this.selectedChatId = null;
+      this.renderCenterView();
+      this.renderInspector();
     }
   }
 
@@ -363,6 +454,20 @@ export class SaveBranchManagerModal {
     return charItem.saves.some(checkSave);
   }
 
+  bindAvatarFallbacks(container) {
+    container.querySelectorAll('img.st-sbm-char-avatar').forEach((img) => {
+      img.addEventListener('error', () => {
+        const fb = img.dataset?.fallback;
+        if (fb && img.src !== fb) {
+          img.dataset.fallback = '';
+          img.src = fb;
+        } else {
+          img.style.opacity = '0.2';
+        }
+      });
+    });
+  }
+
   renderSidebar() {
     const listEl = this.backdropEl.querySelector('[data-role="sidebar-list"]');
 
@@ -387,7 +492,7 @@ export class SaveBranchManagerModal {
           const displayTitle = save.meta.customTitle || prettifySaveName(save.chatId);
           return `
             <div class="st-sbm-char-item ${isSelected ? 'is-selected' : ''}" data-bookmark-avatar="${escapeHtml(ch.avatar)}" data-bookmark-chat="${escapeHtml(save.chatId)}">
-              <img class="st-sbm-char-avatar" loading="lazy" src="${escapeHtml(ch.avatarSrc)}" data-fallback="${escapeHtml(ch.avatarFallbackSrc || '')}" alt="${escapeHtml(ch.name)}" onerror="if(this.dataset.fallback&&this.src!==this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.style.opacity=0.2;}" />
+              <img class="st-sbm-char-avatar" loading="lazy" src="${escapeHtml(ch.avatarSrc)}" data-fallback="${escapeHtml(ch.avatarFallbackSrc || '')}" alt="${escapeHtml(ch.name)}" />
               <div class="st-sbm-char-info">
                 <div class="st-sbm-char-name-row">
                   <span class="st-sbm-char-name">★ ${escapeHtml(displayTitle)}</span>
@@ -402,6 +507,7 @@ export class SaveBranchManagerModal {
         })
         .join('');
 
+      this.bindAvatarFallbacks(listEl);
       listEl.querySelectorAll('[data-bookmark-avatar]').forEach((el) => {
         el.addEventListener('click', () => {
           this.selectCharacter(el.dataset.bookmarkAvatar, el.dataset.bookmarkChat);
@@ -428,7 +534,7 @@ export class SaveBranchManagerModal {
         const timeText = formatShortTime(ch.latestTimestamp);
         return `
           <div class="st-sbm-char-item ${isSelected ? 'is-selected' : ''}" data-char-avatar="${escapeHtml(ch.avatar)}">
-            <img class="st-sbm-char-avatar" loading="lazy" src="${escapeHtml(ch.avatarSrc)}" data-fallback="${escapeHtml(ch.avatarFallbackSrc || '')}" alt="${escapeHtml(ch.name)}" onerror="if(this.dataset.fallback&&this.src!==this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.style.opacity=0.2;}" />
+            <img class="st-sbm-char-avatar" loading="lazy" src="${escapeHtml(ch.avatarSrc)}" data-fallback="${escapeHtml(ch.avatarFallbackSrc || '')}" alt="${escapeHtml(ch.name)}" />
             <div class="st-sbm-char-info">
               <div class="st-sbm-char-name-row">
                 ${ch.isCurrentCharacter ? '<span class="st-sbm-live-dot" title="酒馆当前打开的角色"></span>' : ''}
@@ -445,6 +551,7 @@ export class SaveBranchManagerModal {
       })
       .join('');
 
+    this.bindAvatarFallbacks(listEl);
     listEl.querySelectorAll('[data-char-avatar]').forEach((el) => {
       el.addEventListener('click', () => {
         this.selectCharacter(el.dataset.charAvatar);
@@ -456,28 +563,66 @@ export class SaveBranchManagerModal {
     const charEntry = this.overviewList.find((c) => c.avatar === avatar);
     if (!charEntry) return;
 
+    this.flushPendingNoteSaves(null, { skipCenterRender: true });
+
+    const requestId = ++this.selectRequestSeq;
     this.currentCharacter = charEntry;
+    // 切换角色期间清空旧角色的画布与选中状态，防止在加载中误把旧存档提交给新角色
+    this.currentGraph = null;
+    this.selectedChatId = null;
     this.renderSidebar();
 
     const titleEl = this.backdropEl.querySelector('[data-role="canvas-title"]');
     const subEl = this.backdropEl.querySelector('[data-role="canvas-subtitle"]');
+    const stageEl = this.backdropEl.querySelector('[data-role="stage"]');
+    const listViewEl = this.backdropEl.querySelector('[data-role="list-view"]');
     titleEl.textContent = charEntry.name;
     subEl.textContent = '正在分析存档楼层与分支点...';
+    if (stageEl) {
+      stageEl.innerHTML = `<div class="st-sbm-empty-state" style="width:420px;">正在加载「${escapeHtml(charEntry.name)}」的存档分支...</div>`;
+    }
+    if (listViewEl) {
+      listViewEl.innerHTML = `<div class="st-sbm-empty-state">正在加载「${escapeHtml(charEntry.name)}」的存档列表...</div>`;
+    }
+    this.renderInspector();
 
-    const digests = await this.adapter.getCharacterChatDigests(charEntry, charEntry.saves, forceRefresh);
-    this.currentGraph = buildCharacterBranchGraph(charEntry, digests);
+    let digests;
+    try {
+      digests = await this.adapter.getCharacterChatDigests(charEntry, charEntry.saves, forceRefresh);
+    } catch (err) {
+      if (requestId !== this.selectRequestSeq || this.currentCharacter?.avatar !== charEntry.avatar) {
+        return;
+      }
+      subEl.textContent = `加载存档失败：${err.message || err}`;
+      if (stageEl) {
+        stageEl.innerHTML = `<div class="st-sbm-empty-state" style="width:420px;">加载存档失败：${escapeHtml(err.message || String(err))}</div>`;
+      }
+      return;
+    }
 
-    subEl.textContent = `共 ${this.currentGraph.nodes.length} 个存档 · ${this.currentGraph.rootCount} 条独立开局 · 识别出 ${this.currentGraph.branchCount} 处剧情分叉`;
+    // 竞态防护：若期间已切换至其他角色或发起更新请求，直接丢弃过期响应
+    if (requestId !== this.selectRequestSeq || this.currentCharacter?.avatar !== charEntry.avatar) {
+      return;
+    }
+
+    const graph = buildCharacterBranchGraph(charEntry, digests);
+    graph.characterAvatar = charEntry.avatar;
+    this.currentGraph = graph;
+
+    subEl.textContent = `共 ${graph.nodes.length} 个存档 · ${graph.rootCount} 条独立开局 · 识别出 ${graph.branchCount} 处剧情分叉`;
 
     // 选择默认高亮存档节点
     const targetNode =
-      (preferredChatId && this.currentGraph.nodes.find((n) => n.chatId === stripJsonl(preferredChatId))) ||
-      this.currentGraph.nodes.find((n) => n.isActive) ||
-      this.currentGraph.nodes.find((n) => n.isCharacterLastChat) ||
-      this.currentGraph.nodes[0] ||
+      (preferredChatId && graph.nodes.find((n) => n.chatId === stripJsonl(preferredChatId))) ||
+      graph.nodes.find((n) => n.isActive) ||
+      graph.nodes.find((n) => n.isCharacterLastChat) ||
+      graph.nodes[0] ||
       null;
 
     this.selectedChatId = targetNode ? targetNode.chatId : null;
+    if (this.sidebarTab === 'bookmarks') {
+      this.renderSidebar();
+    }
     this.renderCenterView(true);
     this.renderInspector();
   }
@@ -533,26 +678,38 @@ export class SaveBranchManagerModal {
     const edgeBadges = graph.edges
       .map((edge) => {
         const hl = highlightedEdges.has(edge.id) ? 'is-highlighted' : '';
-        const label = edge.isExactCopy ? `📋 完整副本` : `⚡ #${edge.branchFloor} 楼分叉`;
+        const label = edge.isExactCopy
+          ? `📋 完整副本`
+          : edge.isCheckpointSnapshot
+          ? `📌 #${edge.branchFloor} 楼检查点`
+          : `⚡ #${edge.branchFloor} 楼分叉`;
         return `<div class="st-sbm-edge-badge ${hl}" style="left:${edge.badgeX}px; top:${edge.badgeY}px;">${label}</div>`;
       })
       .join('');
 
+    const ownerCharacter = this.currentCharacter;
+    const ownerAvatar = ownerCharacter?.avatar || '';
+    if (!ownerCharacter || (graph.characterAvatar && graph.characterAvatar !== ownerAvatar)) {
+      return;
+    }
+
     const nodeCards = graph.nodes
       .map((node) => {
-        const meta = this.adapter.getSaveMeta(this.currentCharacter.avatar, node.chatId);
+        const meta = this.adapter.getSaveMeta(ownerAvatar, node.chatId);
         const title = meta.customTitle || prettifySaveName(node.chatId);
         const isSelected = node.chatId === this.selectedChatId;
         const isSearchDimmed =
           this.searchQuery &&
-          !this.matchesSearch(this.currentCharacter, {
+          !this.matchesSearch(ownerCharacter, {
             ...node,
             meta,
             previewText: node.lastFloorSnippet,
           });
 
         const typePill = node.branchMoment
-          ? `<span class="st-sbm-pill st-sbm-pill-branch">🔀 #${node.branchMoment.branchFloor} 楼分叉</span>`
+          ? node.branchMoment.isCheckpointSnapshot
+            ? `<span class="st-sbm-pill st-sbm-pill-branch">📌 #${node.branchMoment.branchFloor} 楼检查点</span>`
+            : `<span class="st-sbm-pill st-sbm-pill-branch">🔀 #${node.branchMoment.branchFloor} 楼分叉</span>`
           : `<span class="st-sbm-pill st-sbm-pill-root">🌱 开局主干</span>`;
 
         const activePill = node.isActive
@@ -613,10 +770,12 @@ export class SaveBranchManagerModal {
     stage.querySelectorAll('[data-star-id]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
+        if (!this.currentCharacter || this.currentCharacter.avatar !== ownerAvatar) return;
+        this.flushPendingNoteSaves(null, { skipCenterRender: true });
         const chatId = btn.dataset.starId;
-        const cur = this.adapter.getSaveMeta(this.currentCharacter.avatar, chatId);
-        this.adapter.updateSaveMeta(this.currentCharacter.avatar, chatId, { starred: !cur.starred });
-        this.syncOverviewMetaCounts(this.currentCharacter.avatar);
+        const cur = this.adapter.getSaveMeta(ownerAvatar, chatId);
+        this.adapter.updateSaveMeta(ownerAvatar, chatId, { starred: !cur.starred });
+        this.syncOverviewMetaCounts(ownerAvatar);
         this.renderTreeStage();
         if (this.selectedChatId === chatId) this.renderInspector();
       });
@@ -624,12 +783,16 @@ export class SaveBranchManagerModal {
 
     stage.querySelectorAll('[data-node-id]').forEach((card) => {
       card.addEventListener('click', () => {
+        if (!this.currentCharacter || this.currentCharacter.avatar !== ownerAvatar) return;
+        this.flushPendingNoteSaves(null, { skipCenterRender: true });
         this.selectedChatId = card.dataset.nodeId;
+        if (this.sidebarTab === 'bookmarks') this.renderSidebar();
         this.renderTreeStage();
         this.renderInspector();
       });
       card.addEventListener('dblclick', () => {
-        this.handleJump(card.dataset.nodeId);
+        if (!this.currentCharacter || this.currentCharacter.avatar !== ownerAvatar) return;
+        this.handleJump(card.dataset.nodeId, ownerCharacter);
       });
     });
 
@@ -639,23 +802,36 @@ export class SaveBranchManagerModal {
   renderTimelineList() {
     const listView = this.backdropEl.querySelector('[data-role="list-view"]');
     const graph = this.currentGraph;
-    if (!graph || graph.nodes.length === 0) {
+    const ownerCharacter = this.currentCharacter;
+    if (!graph || graph.nodes.length === 0 || !ownerCharacter || (graph.characterAvatar && graph.characterAvatar !== ownerCharacter.avatar)) {
       listView.innerHTML = `<div class="st-sbm-empty-state">该角色卡下暂无聊天存档</div>`;
       return;
     }
 
-    const sorted = [...graph.nodes].sort((a, b) => (Date.parse(b.lastModified) || 0) - (Date.parse(a.lastModified) || 0));
+    const ownerAvatar = ownerCharacter.avatar;
+    const sorted = [...graph.nodes].sort(
+      (a, b) => (parseSillyTavernTimestamp(b.lastModified) || 0) - (parseSillyTavernTimestamp(a.lastModified) || 0)
+    );
     listView.innerHTML = sorted
       .map((node) => {
-        const meta = this.adapter.getSaveMeta(this.currentCharacter.avatar, node.chatId);
+        const meta = this.adapter.getSaveMeta(ownerAvatar, node.chatId);
         const title = meta.customTitle || prettifySaveName(node.chatId);
         const isSelected = node.chatId === this.selectedChatId;
+        const isSearchDimmed =
+          this.searchQuery &&
+          !this.matchesSearch(ownerCharacter, {
+            ...node,
+            meta,
+            previewText: node.lastFloorSnippet,
+          });
         const branchBadge = node.branchMoment
-          ? `<span class="st-sbm-pill st-sbm-pill-branch">🔀 从 #${node.branchMoment.branchFloor} 楼分叉</span>`
+          ? node.branchMoment.isCheckpointSnapshot
+            ? `<span class="st-sbm-pill st-sbm-pill-branch">📌 #${node.branchMoment.branchFloor} 楼检查点</span>`
+            : `<span class="st-sbm-pill st-sbm-pill-branch">🔀 从 #${node.branchMoment.branchFloor} 楼分叉</span>`
           : `<span class="st-sbm-pill st-sbm-pill-root">🌱 开局主干</span>`;
 
         return `
-          <div class="st-sbm-list-row ${isSelected ? 'is-selected' : ''}" data-list-node="${escapeHtml(node.chatId)}">
+          <div class="st-sbm-list-row ${isSelected ? 'is-selected' : ''}" data-list-node="${escapeHtml(node.chatId)}" style="${isSearchDimmed ? 'opacity:0.35;' : ''}">
             <div style="min-width:0; flex:1;">
               <div style="display:flex; align-items:center; gap:8px; margin-bottom:5px;">
                 <span style="color:var(--sbm-amber);">${meta.starred ? '★' : ''}</span>
@@ -679,12 +855,16 @@ export class SaveBranchManagerModal {
 
     listView.querySelectorAll('[data-list-node]').forEach((row) => {
       row.addEventListener('click', () => {
+        if (!this.currentCharacter || this.currentCharacter.avatar !== ownerAvatar) return;
+        this.flushPendingNoteSaves(null, { skipCenterRender: true });
         this.selectedChatId = row.dataset.listNode;
+        if (this.sidebarTab === 'bookmarks') this.renderSidebar();
         this.renderTimelineList();
         this.renderInspector();
       });
       row.addEventListener('dblclick', () => {
-        this.handleJump(row.dataset.listNode);
+        if (!this.currentCharacter || this.currentCharacter.avatar !== ownerAvatar) return;
+        this.handleJump(row.dataset.listNode, ownerCharacter);
       });
     });
   }
@@ -728,7 +908,12 @@ export class SaveBranchManagerModal {
 
   renderInspector() {
     const insp = this.backdropEl.querySelector('[data-role="inspector"]');
-    if (!this.currentGraph || !this.selectedChatId) {
+    if (
+      !this.currentCharacter ||
+      !this.currentGraph ||
+      !this.selectedChatId ||
+      (this.currentGraph.characterAvatar && this.currentGraph.characterAvatar !== this.currentCharacter.avatar)
+    ) {
       insp.innerHTML = `<div class="st-sbm-empty-state">点击中间画布上的任意存档节点，查看分叉楼层对比与备注。</div>`;
       return;
     }
@@ -736,7 +921,8 @@ export class SaveBranchManagerModal {
     const node = this.currentGraph.nodes.find((n) => n.chatId === this.selectedChatId);
     if (!node) return;
 
-    const avatar = this.currentCharacter.avatar;
+    const ownerCharacter = this.currentCharacter;
+    const avatar = ownerCharacter.avatar;
     const meta = this.adapter.getSaveMeta(avatar, node.chatId);
     const parentNode = node.parentId ? this.currentGraph.nodes.find((n) => n.chatId === node.parentId) : null;
     const parentTitle = parentNode
@@ -763,13 +949,17 @@ export class SaveBranchManagerModal {
            </div>`
         : `<div class="st-sbm-diff-box is-child-next">
              <div class="st-sbm-diff-label">本分支状态</div>
-             <div>与父存档前 ${bm.branchFloor} 楼完全一致（备份存档）</div>
+             <div>${
+               bm.isCheckpointSnapshot
+                 ? `在父存档第 ${bm.branchFloor} 楼处定格（检查点存档）`
+                 : `与父存档前 ${bm.branchFloor} 楼完全一致（备份存档）`
+             }</div>
            </div>`;
 
       branchSectionHtml = `
         <section class="st-sbm-section">
           <div class="st-sbm-section-title">
-            <span>🔀 分叉时刻 · 第 ${bm.branchFloor} 楼</span>
+            <span>${bm.isCheckpointSnapshot ? `📌 检查点 · 第 ${bm.branchFloor} 楼` : `🔀 分叉时刻 · 第 ${bm.branchFloor} 楼`}</span>
             <button type="button" class="st-sbm-link-btn" data-select-parent="${escapeHtml(parentNode.chatId)}">
               源头：${escapeHtml(parentTitle)}
             </button>
@@ -866,14 +1056,39 @@ export class SaveBranchManagerModal {
     `;
 
     // 绑定检查器交互事件
+    const noteSaveKey = `${avatar}::${stripJsonl(node.chatId)}`;
     const titleInput = insp.querySelector('[data-role="custom-title"]');
+    titleInput.addEventListener('input', () => {
+      this.pendingTitleSave = {
+        avatar,
+        chatId: node.chatId,
+        value: titleInput.value.trim(),
+      };
+    });
     titleInput.addEventListener('change', () => {
-      this.adapter.updateSaveMeta(avatar, node.chatId, { customTitle: titleInput.value.trim() });
-      this.syncOverviewMetaCounts(avatar);
-      this.renderCenterView();
+      this.pendingTitleSave = {
+        avatar,
+        chatId: node.chatId,
+        value: titleInput.value.trim(),
+      };
+      this.flushPendingNoteSaves(noteSaveKey, { skipCenterRender: true });
+      this.flushPendingTitleSave();
+    });
+    titleInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        titleInput.blur?.();
+        this.pendingTitleSave = {
+          avatar,
+          chatId: node.chatId,
+          value: titleInput.value.trim(),
+        };
+        this.flushPendingTitleSave();
+      }
     });
 
     insp.querySelector('[data-role="insp-star-btn"]').addEventListener('click', () => {
+      this.flushPendingNoteSaves(noteSaveKey, { skipCenterRender: true });
       const cur = this.adapter.getSaveMeta(avatar, node.chatId);
       this.adapter.updateSaveMeta(avatar, node.chatId, { starred: !cur.starred });
       this.syncOverviewMetaCounts(avatar);
@@ -882,12 +1097,13 @@ export class SaveBranchManagerModal {
     });
 
     insp.querySelector('[data-role="jump-btn"]').addEventListener('click', () => {
-      this.handleJump(node.chatId);
+      this.handleJump(node.chatId, ownerCharacter);
     });
 
     const parentBtn = insp.querySelector('[data-select-parent]');
     if (parentBtn) {
       parentBtn.addEventListener('click', () => {
+        this.flushPendingNoteSaves(null, { skipCenterRender: true });
         this.selectedChatId = parentBtn.dataset.selectParent;
         this.renderCenterView();
         this.renderInspector();
@@ -896,6 +1112,7 @@ export class SaveBranchManagerModal {
 
     insp.querySelectorAll('[data-toggle-tag]').forEach((chip) => {
       chip.addEventListener('click', () => {
+        this.flushPendingNoteSaves(noteSaveKey, { skipCenterRender: true });
         const tag = chip.dataset.toggleTag;
         const curTags = new Set(this.adapter.getSaveMeta(avatar, node.chatId).tags);
         if (curTags.has(tag)) curTags.delete(tag);
@@ -911,6 +1128,7 @@ export class SaveBranchManagerModal {
       const input = insp.querySelector('[data-role="new-tag-input"]');
       const val = input.value.trim().replace(/^#/, '');
       if (!val) return;
+      this.flushPendingNoteSaves(noteSaveKey, { skipCenterRender: true });
       const curTags = new Set(this.adapter.getSaveMeta(avatar, node.chatId).tags);
       curTags.add(val);
       this.adapter.updateSaveMeta(avatar, node.chatId, { tags: Array.from(curTags) });
@@ -931,23 +1149,42 @@ export class SaveBranchManagerModal {
     const statusEl = insp.querySelector('[data-role="save-status"]');
     noteInput.addEventListener('input', () => {
       statusEl.textContent = '正在输入...';
-      clearTimeout(this.noteSaveTimer);
-      this.noteSaveTimer = setTimeout(() => {
-        this.adapter.updateSaveMeta(avatar, node.chatId, { note: noteInput.value.trim() });
-        this.syncOverviewMetaCounts(avatar);
-        this.renderCenterView();
-        statusEl.textContent = '✓ 已自动保存';
+      const existing = this.pendingNoteSaves.get(noteSaveKey);
+      if (existing) {
+        clearTimeout(existing.timer);
+      }
+      const value = noteInput.value.trim();
+      const timer = setTimeout(() => {
+        this.flushPendingNoteSaves(noteSaveKey);
       }, 320);
+      this.pendingNoteSaves.set(noteSaveKey, {
+        avatar,
+        chatId: node.chatId,
+        value,
+        timer,
+        statusEl,
+      });
+    });
+    noteInput.addEventListener('blur', () => {
+      this.flushPendingNoteSaves(noteSaveKey);
     });
   }
 
-  async handleJump(chatId) {
-    if (!this.currentCharacter) return;
+  async handleJump(chatId, characterOverride = null) {
+    const targetCharacter = characterOverride || this.currentCharacter;
+    if (!targetCharacter) return;
+    if (
+      this.currentGraph?.characterAvatar &&
+      this.currentGraph.characterAvatar !== targetCharacter.avatar
+    ) {
+      return;
+    }
+    this.flushPendingNoteSaves(null, { skipCenterRender: true });
     try {
-      await this.adapter.jumpToSave(this.currentCharacter, chatId);
-      const meta = this.adapter.getSaveMeta(this.currentCharacter.avatar, chatId);
+      await this.adapter.jumpToSave(targetCharacter, chatId);
+      const meta = this.adapter.getSaveMeta(targetCharacter.avatar, chatId);
       const label = meta.customTitle || prettifySaveName(chatId);
-      this.showToast(`已切换至「${this.currentCharacter.name} · ${label}」`);
+      this.showToast(`已切换至「${targetCharacter.name} · ${label}」`);
       this.close();
     } catch (err) {
       this.showToast(`切换存档失败：${err.message}`);
