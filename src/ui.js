@@ -939,6 +939,7 @@ export class SaveBranchManagerModal {
     let overview;
     let earlySelectedAvatar = null;
     let prioritySelectPromise = null;
+    const initialSelectSeq = this.selectRequestSeq;
     try {
       if (this.adapter.isTauriTavern?.()) {
         await this.adapter.waitForHostReady?.();
@@ -959,6 +960,22 @@ export class SaveBranchManagerModal {
         null;
       const priorityAvatar = priorityChar?.avatar || null;
 
+      // 首次冷开也立刻用已知角色列表铺好侧栏，不再让左侧卡在空白进度条等待全库扫描完成
+      if (!isIncrementalReopen && liveChars.length > 0) {
+        this.overviewList = liveChars.map((ch) => ({
+          ...ch,
+          saves: [],
+          saveCount: 0,
+          starredCount: 0,
+          notedCount: 0,
+          latestTimestamp: 0,
+          summaryError: '',
+          _pendingSummaries: true,
+        }));
+        this.currentCharacter = this.overviewList.find((c) => c.avatar === priorityAvatar) || this.overviewList[0];
+        this.renderSidebar();
+      }
+
       overview = await this.adapter.loadGlobalOverview({
         forceRefresh: refreshSummaries,
         priorityAvatars: priorityAvatar ? [priorityAvatar] : [],
@@ -966,22 +983,28 @@ export class SaveBranchManagerModal {
           if (refreshId !== this.refreshRequestSeq || earlySelectedAvatar || !priorityAvatar || entry.avatar !== priorityAvatar) {
             return;
           }
-          // 优先角色摘要一到达就立即拉取并渲染其故事线，无需阻塞等待全部角色扫描完成
-          earlySelectedAvatar = entry.avatar;
           const existingIdx = this.overviewList.findIndex((c) => c.avatar === entry.avatar);
           if (existingIdx >= 0) {
             this.overviewList[existingIdx] = entry;
           } else {
-            this.overviewList = isIncrementalReopen ? [...this.overviewList, entry] : [entry];
+            this.overviewList = [...this.overviewList, entry];
           }
+          // 若用户在优先角色返回前已主动点选了其他角色，不劫持用户的手动选择
+          if (this.selectRequestSeq !== initialSelectSeq) {
+            return;
+          }
+          // 优先角色摘要一到达就立即拉取并渲染其故事线，无需阻塞等待全部角色扫描完成
+          earlySelectedAvatar = entry.avatar;
           const preferredChatId = entry.avatar === prevAvatar ? prevChatId : null;
           prioritySelectPromise = this.selectCharacter(entry.avatar, preferredChatId, forceDigests, {
-            skipSidebarSync: !isIncrementalReopen,
+            skipSidebarSync: true,
           });
         },
-        onProgress: (done, total) => {
-          if (refreshId !== this.refreshRequestSeq || isIncrementalReopen) return;
-          sidebarList.innerHTML = `<div class="st-sbm-progress"><i style="width:${Math.round((done / Math.max(1, total)) * 100)}%"></i></div>`;
+        // 等优先角色的故事线完全渲染就绪后，再放行后台其余角色的扫描，避免抢占连接与磁盘 I/O
+        onPriorityReady: async () => {
+          if (prioritySelectPromise) {
+            await prioritySelectPromise;
+          }
         },
       });
     } catch (err) {
@@ -1001,14 +1024,16 @@ export class SaveBranchManagerModal {
       return b.saveCount - a.saveCount;
     });
 
+    const userSelectedDuringLoad = this.selectRequestSeq !== initialSelectSeq && Boolean(this.currentCharacter?.avatar);
     const targetChar =
-      (earlySelectedAvatar && this.overviewList.find((c) => c.avatar === (this.currentCharacter?.avatar || earlySelectedAvatar))) ||
+      ((earlySelectedAvatar || userSelectedDuringLoad) &&
+        this.overviewList.find((c) => c.avatar === (this.currentCharacter?.avatar || earlySelectedAvatar))) ||
       this.overviewList.find((c) => c.avatar === prevAvatar) ||
       this.overviewList.find((c) => c.isCurrentCharacter) ||
       this.overviewList[0] ||
       null;
 
-    if (earlySelectedAvatar && targetChar) {
+    if ((earlySelectedAvatar || userSelectedDuringLoad) && targetChar) {
       if (this.currentCharacter?.avatar === targetChar.avatar) {
         this.currentCharacter = targetChar;
       }
@@ -1081,6 +1106,28 @@ export class SaveBranchManagerModal {
 
     let digests;
     try {
+      if (charEntry._pendingSummaries && typeof this.adapter.getCharacterChatSummaries === 'function') {
+        const summaries = await this.adapter.getCharacterChatSummaries(charEntry, forceRefresh);
+        if (isStale()) return;
+        const allMeta = this.adapter.getAllMetadata?.() ?? null;
+        let starredCount = 0;
+        let notedCount = 0;
+        let latestTime = 0;
+        charEntry.saves = summaries.map((s) => {
+          const meta = this.adapter.getSaveMeta(charEntry.avatar, s.chatId, allMeta);
+          if (meta.starred) starredCount += 1;
+          if (meta.note || meta.tags.length > 0) notedCount += 1;
+          const ts = parseSillyTavernTimestamp(s.lastModified) || 0;
+          if (ts > latestTime) latestTime = ts;
+          return { ...s, meta };
+        });
+        charEntry.saveCount = charEntry.saves.length;
+        charEntry.starredCount = starredCount;
+        charEntry.notedCount = notedCount;
+        charEntry.latestTimestamp = latestTime;
+        charEntry._pendingSummaries = false;
+        this.renderSidebar();
+      }
       digests = await this.adapter.getCharacterChatDigests(charEntry, charEntry.saves, forceRefresh);
     } catch (err) {
       if (isStale()) return;

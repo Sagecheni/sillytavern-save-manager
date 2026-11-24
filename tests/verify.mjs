@@ -2977,4 +2977,316 @@ assert.equal(jsonlParsed.length, 2, '应兼容逐行 JSONL 文本格式');
   }
 }
 
+// 26. [秒开优化回归] 跨刷新持久化角色摘要、活跃聊天内存直读 ctx.chat、优先角色独享通道不抢带宽、后台未完成时点击即拉
+{
+  const prevDocument = globalThis.document;
+  const prevWindow = globalThis.window;
+  const prevFetch = globalThis.fetch;
+  const prevIndexedDB = globalThis.indexedDB;
+  const prevRAF = globalThis.requestAnimationFrame;
+
+  const digestStore = new Map();
+  const summaryStore = new Map();
+
+  globalThis.indexedDB = {
+    open() {
+      const req = {};
+      const fakeDb = {
+        objectStoreNames: {
+          contains: (name) => name === 'chat_digests' || name === 'character_summaries',
+        },
+        transaction(stores) {
+          const tx = {
+            objectStore(name) {
+              const target = name === 'character_summaries' ? summaryStore : digestStore;
+              return {
+                get(key) {
+                  const r = {};
+                  setTimeout(() => {
+                    r.result = target.get(key);
+                    r.onsuccess?.();
+                  }, 2);
+                  return r;
+                },
+                getAll() {
+                  const r = {};
+                  setTimeout(() => {
+                    r.result = Array.from(target.values());
+                    r.onsuccess?.();
+                  }, 2);
+                  return r;
+                },
+                put(rec) {
+                  setTimeout(() => {
+                    target.set(rec.avatar ?? rec.cacheKey, rec);
+                    tx.oncomplete?.();
+                  }, 2);
+                },
+                delete(key) {
+                  setTimeout(() => {
+                    target.delete(key);
+                    tx.oncomplete?.();
+                  }, 2);
+                },
+                clear() {
+                  setTimeout(() => {
+                    target.clear();
+                    tx.oncomplete?.();
+                  }, 2);
+                },
+              };
+            },
+          };
+          return tx;
+        },
+      };
+      setTimeout(() => {
+        req.result = fakeDb;
+        req.onsuccess?.();
+      }, 2);
+      return req;
+    },
+  };
+
+  const eventsLog = [];
+  const mockCtx = {
+    characterId: '0',
+    chatId: 'a_active',
+    groupId: null,
+    name1: 'Player',
+    name2: 'CharA',
+    chatMetadata: { main_chat: 'a_main', create_date: '2026-11-24T00:00:00Z' },
+    chat: [
+      { name: 'CharA', is_user: false, mes: '内存里的第一楼开场白' },
+      { name: 'Player', is_user: true, mes: '内存里的第二楼回复' },
+      { name: 'CharA', is_user: false, mes: '内存里刚写完的最新一楼' },
+    ],
+    characters: [
+      { name: 'CharA', avatar: 'a.png', chat: 'a_active' },
+      { name: 'CharB', avatar: 'b.png', chat: 'b_1' },
+      { name: 'CharC', avatar: 'c.png', chat: 'c_1' },
+    ],
+    getCurrentChatId: () => mockCtx.chatId,
+    getRequestHeaders: () => ({}),
+  };
+
+  globalThis.window = {
+    innerWidth: 1280,
+    addEventListener() {},
+    SillyTavern: { getContext: () => mockCtx },
+  };
+  globalThis.fetch = async (url, init) => {
+    const body = JSON.parse(init?.body || '{}');
+    if (url === 'api/characters/chats') {
+      eventsLog.push(`summary:${body.avatar_url}`);
+      if (body.avatar_url === 'a.png') {
+        return {
+          ok: true,
+          json: async () => [
+            { file_name: 'a_main.jsonl', file_size: '2KB', chat_items: 2, last_mes: '2026-11-23T10:00:00Z', mes: '主线' },
+            { file_name: 'a_active.jsonl', file_size: '3KB', chat_items: 3, last_mes: '2026-11-24T10:00:00Z', mes: '内存里刚写完的最新一楼' },
+          ],
+        };
+      }
+      return {
+        ok: true,
+        json: async () => [
+          { file_name: `${body.avatar_url.replace('.png', '')}_1.jsonl`, file_size: '1KB', chat_items: 1, last_mes: '2026-11-22T10:00:00Z', mes: 'hi' },
+        ],
+      };
+    }
+    if (url === 'api/chats/get') {
+      eventsLog.push(`digest:${body.avatar_url}:${body.file_name}`);
+      if (body.file_name === 'a_main') {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify([
+              { chat_metadata: {} },
+              { name: 'CharA', is_user: false, mes: '内存里的第一楼开场白' },
+              { name: 'Player', is_user: true, mes: '内存里的第二楼回复' },
+            ]),
+        };
+      }
+      return {
+        ok: true,
+        text: async () => JSON.stringify([{ chat_metadata: {} }, { name: 'CharA', is_user: false, mes: '磁盘版本' }]),
+      };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  class InstantEl {
+    constructor(role = '') {
+      this.role = role;
+      this.hidden = false;
+      this.textContent = '';
+      this.value = '';
+      this.dataset = {};
+      this.style = {};
+      this.scrollHeight = 40;
+      this._html = '';
+      this.childrenByRole = new Map();
+      this.classList = { add() {}, remove() {}, toggle() {} };
+    }
+    set innerHTML(v) {
+      this._html = String(v);
+      this.childrenByRole.clear();
+    }
+    get innerHTML() {
+      return this._html;
+    }
+    addEventListener() {}
+    setAttribute() {}
+    querySelector(sel) {
+      const m = sel.match(/\[data-role="([^"]+)"\]/);
+      if (m) {
+        if (!this.childrenByRole.has(m[1])) this.childrenByRole.set(m[1], new InstantEl(m[1]));
+        return this.childrenByRole.get(m[1]);
+      }
+      return null;
+    }
+    querySelectorAll() {
+      return [];
+    }
+    contains() {
+      return false;
+    }
+    appendChild() {}
+    remove() {}
+  }
+
+  globalThis.document = {
+    createElement: () => new InstantEl(),
+    body: { appendChild() {} },
+    addEventListener() {},
+    querySelectorAll: () => [],
+    activeElement: null,
+  };
+  globalThis.requestAnimationFrame = (cb) => cb();
+
+  try {
+    // 26A & 26B & 26C: 首次冷开
+    const firstAdapter = new SaveManagerAdapter();
+    const firstModal = new SaveBranchManagerModal(firstAdapter);
+    firstModal.backdropEl = new InstantEl('backdrop');
+    firstModal.backdropEl.hidden = true;
+    await firstModal.open();
+    // 等待异步持久化写入完成
+    await new Promise((r) => setTimeout(r, 20));
+
+    // 1) 活跃存档 a_active 直接从内存 ctx.chat 构建，绝不请求 api/chats/get
+    assert.equal(eventsLog.includes('digest:a.png:a_active'), false, '活跃存档应直接读取内存 ctx.chat，零网络拉取');
+    assert.equal(eventsLog.includes('digest:a.png:a_main'), true, '非活跃存档 a_main 首次走接口并写入 IDB');
+    const activeNode = firstModal.currentGraph.nodes.find((n) => n.chatId === 'a_active');
+    assert.equal(activeNode.floors.length, 3, '内存直读不得把 ctx.chat[0] 误当 header 吞掉');
+    assert.equal(activeNode.parentId, 'a_main', '内存直读应保留 ctx.chatMetadata.main_chat 并正确推导分叉');
+
+    // 2) 优先角色 a.png 的摘要与故事线必须在 b.png/c.png 后台扫描启动前完成（不抢连接）
+    const idxA = eventsLog.indexOf('summary:a.png');
+    const idxAMain = eventsLog.indexOf('digest:a.png:a_main');
+    const idxB = eventsLog.indexOf('summary:b.png');
+    const idxC = eventsLog.indexOf('summary:c.png');
+    assert.ok(idxA >= 0 && idxAMain > idxA && idxB > idxAMain && idxC > idxAMain, `优先角色应先完成加载再扫后台: ${eventsLog.join(' -> ')}`);
+
+    // 3) 模拟刷新页面 / 重启应用（全新 SaveManagerAdapter 实例）：
+    //    b.png / c.png 命中持久化 character_summaries，a_main 命中持久化 chat_digests，a_active 直读内存 -> 整次打开仅发 1 次 summary:a.png，0 次 api/chats/get！
+    eventsLog.length = 0;
+    const reloadedAdapter = new SaveManagerAdapter();
+    const reloadedModal = new SaveBranchManagerModal(reloadedAdapter);
+    reloadedModal.backdropEl = new InstantEl('backdrop-reload');
+    reloadedModal.backdropEl.hidden = true;
+    await reloadedModal.open();
+
+    assert.deepEqual(
+      eventsLog,
+      ['summary:a.png'],
+      `页面刷新后重开应仅刷新活跃角色摘要，非活跃角色摘要与历史楼层全部命中持久化 IDB，活跃聊天直读内存；实际请求: ${eventsLog.join(', ')}`
+    );
+    assert.equal(reloadedModal.overviewList.length, 3, '刷新后侧栏应立即包含全部 3 个角色');
+    assert.equal(reloadedModal.currentGraph.nodes.length, 2, '刷新后当前角色故事线应完整渲染');
+
+    // 4) 若 ctx.chat 尚未水合（空数组但摘要宣称有消息），安全回退到 api/chats/get；forceRefresh=true 也回源磁盘
+    mockCtx.chat = [];
+    eventsLog.length = 0;
+    const fallbackDigests = await reloadedAdapter.getCharacterChatDigests(
+      { id: 0, name: 'CharA', avatar: 'a.png', activeChatId: 'a_active', isCurrentCharacter: true },
+      [{ chatId: 'a_active', fileName: 'a_active.jsonl', rawFileSize: '3KB', messageCount: 3, lastModified: '2026-11-24T10:00:00Z', previewText: 'x' }]
+    );
+    assert.deepEqual(eventsLog, ['digest:a.png:a_active'], 'ctx.chat 为空但预期有消息时应安全回退走磁盘拉取');
+    assert.equal(fallbackDigests[0].floors[0].snippet, '磁盘版本');
+
+    // 恢复内存 ctx.chat 后，forceRefresh=true 仍必须绕过内存直读走磁盘
+    mockCtx.chat = [
+      { name: 'CharA', is_user: false, mes: '内存版本' },
+    ];
+    eventsLog.length = 0;
+    const forcedDigests = await reloadedAdapter.getCharacterChatDigests(
+      { id: 0, name: 'CharA', avatar: 'a.png', activeChatId: 'a_active', isCurrentCharacter: true },
+      [{ chatId: 'a_active', fileName: 'a_active.jsonl', rawFileSize: '3KB', messageCount: 1, lastModified: '2026-11-24T10:00:00Z', previewText: 'x' }],
+      true
+    );
+    assert.deepEqual(eventsLog, ['digest:a.png:a_active'], 'forceRefresh=true 应绕过内存直读强制回源磁盘');
+    assert.equal(forcedDigests[0].floors[0].snippet, '磁盘版本');
+
+    // 5) 失效非活跃角色 b.png 后应同步删除其持久化摘要，刷新重开时不会复用陈旧摘要
+    reloadedAdapter.invalidateCharacterCache('b.png');
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(summaryStore.has('b.png'), false, 'invalidateCharacterCache 应同步清除 IDB 中该角色的持久化摘要');
+    eventsLog.length = 0;
+    const afterInvalidateAdapter = new SaveManagerAdapter();
+    const afterInvalidateModal = new SaveBranchManagerModal(afterInvalidateAdapter);
+    afterInvalidateModal.backdropEl = new InstantEl('backdrop-after-invalidate');
+    afterInvalidateModal.backdropEl.hidden = true;
+    await afterInvalidateModal.open();
+    assert.deepEqual(
+      eventsLog,
+      ['summary:a.png', 'summary:b.png'],
+      '仅失效 b.png 后刷新重开，应重拉 a.png 与 b.png，c.png 仍命中持久化摘要'
+    );
+
+    // 6) 冷开侧栏占位期间，用户在优先角色 a.png 返回前点击其他角色 b.png，应立即按需拉取 b.png 且不被稍后返回的 a.png 劫持
+    let releaseSlowA;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const body = JSON.parse(init?.body || '{}');
+      if (url === 'api/characters/chats' && body.avatar_url === 'a.png') {
+        return new Promise((resolve) => {
+          releaseSlowA = () =>
+            resolve({
+              ok: true,
+              json: async () => [
+                { file_name: 'a_active.jsonl', file_size: '3KB', chat_items: 1, last_mes: '2026-11-24T10:00:00Z', mes: 'A' },
+              ],
+            });
+        });
+      }
+      return origFetch(url, init);
+    };
+    summaryStore.clear();
+    const clickMidScanAdapter = new SaveManagerAdapter();
+    const clickMidScanModal = new SaveBranchManagerModal(clickMidScanAdapter);
+    clickMidScanModal.backdropEl = new InstantEl('backdrop-mid-scan');
+    clickMidScanModal.backdropEl.hidden = true;
+    const midOpenTask = clickMidScanModal.open();
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(clickMidScanModal.overviewList.length, 3, '冷开时应立刻用已知角色铺好侧栏，无需等待扫描结束');
+    assert.equal(clickMidScanModal.overviewList[1]._pendingSummaries, true);
+    await clickMidScanModal.selectCharacter('b.png');
+    assert.equal(clickMidScanModal.currentCharacter?.avatar, 'b.png', '点击未扫描角色应立即按需加载其存档');
+    assert.equal(clickMidScanModal.currentGraph?.characterAvatar, 'b.png');
+    releaseSlowA();
+    await midOpenTask;
+    assert.equal(clickMidScanModal.currentCharacter?.avatar, 'b.png', '优先角色稍后返回时不得劫持用户已主动切换的角色');
+    assert.equal(clickMidScanModal.currentGraph?.characterAvatar, 'b.png');
+    globalThis.fetch = origFetch;
+  } finally {
+    globalThis.document = prevDocument;
+    globalThis.window = prevWindow;
+    globalThis.fetch = prevFetch;
+    globalThis.indexedDB = prevIndexedDB;
+    globalThis.requestAnimationFrame = prevRAF;
+  }
+}
+
 console.log('✅ 所有分支检测、三方对比、树布局及回归测试全部通过！');

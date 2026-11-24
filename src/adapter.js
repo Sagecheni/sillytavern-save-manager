@@ -15,11 +15,13 @@ import { MOCK_CHARACTERS, MOCK_CHATS_BY_AVATAR, MOCK_DEFAULT_METADATA } from './
 const EXTENSION_KEY = 'save_branch_manager';
 const LOCAL_META_KEY = 'st_save_branch_manager_meta_v1';
 const IDB_NAME = 'st_save_branch_manager_cache_v1';
-const IDB_VERSION = 5;
+const IDB_VERSION = 6;
 const IDB_STORE = 'chat_digests';
+const IDB_SUMMARY_STORE = 'character_summaries';
 const DIGEST_SCHEMA_VERSION = 'v5';
-const DEFAULT_SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000;
-const DEFAULT_DIGEST_CACHE_TTL_MS = 10 * 60 * 1000;
+const SUMMARY_SCHEMA_VERSION = 'v1';
+const DEFAULT_SUMMARY_CACHE_TTL_MS = 30 * 60 * 1000;
+const DEFAULT_DIGEST_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_SWITCH_VERIFY_TIMEOUT_MS = 600;
 const DEFAULT_SWITCH_POLL_INTERVAL_MS = 40;
 
@@ -197,7 +199,7 @@ function canonicalizeJsonValue(value) {
 /**
  * 将原始聊天记录压缩为轻量楼层摘要（避免在 IndexedDB 中存储几十 MB 的完整正文与 swipes）
  */
-export function compactChatLines(rawLines = [], { strictHeader = false } = {}) {
+export function compactChatLines(rawLines = [], { strictHeader = false, skipHeaderDetection = false } = {}) {
   if (!Array.isArray(rawLines) || rawLines.length === 0) {
     return { header: {}, floors: [] };
   }
@@ -207,6 +209,7 @@ export function compactChatLines(rawLines = [], { strictHeader = false } = {}) {
   const first = rawLines[0];
   const isPlainFirst = Boolean(first && typeof first === 'object' && !Array.isArray(first));
   const isHeaderLine =
+    !skipHeaderDetection &&
     isPlainFirst &&
     (strictHeader ||
       (first.mes === undefined &&
@@ -347,8 +350,11 @@ class IndexedDbDigestCache {
           const db = req.result;
           if (!db.objectStoreNames.contains(IDB_STORE)) {
             db.createObjectStore(IDB_STORE, { keyPath: 'cacheKey' });
-          } else if (event.oldVersion < IDB_VERSION) {
+          } else if (event.oldVersion < 5) {
             req.transaction.objectStore(IDB_STORE).clear();
+          }
+          if (!db.objectStoreNames.contains(IDB_SUMMARY_STORE)) {
+            db.createObjectStore(IDB_SUMMARY_STORE, { keyPath: 'avatar' });
           }
         };
 
@@ -520,8 +526,108 @@ class IndexedDbDigestCache {
         resolve();
       };
       try {
-        const tx = db.transaction(IDB_STORE, 'readwrite');
+        const stores = db.objectStoreNames?.contains?.(IDB_SUMMARY_STORE)
+          ? [IDB_STORE, IDB_SUMMARY_STORE]
+          : [IDB_STORE];
+        const tx = db.transaction(stores, 'readwrite');
         tx.objectStore(IDB_STORE).clear();
+        if (stores.includes(IDB_SUMMARY_STORE)) {
+          tx.objectStore(IDB_SUMMARY_STORE).clear();
+        }
+        tx.oncomplete = done;
+        tx.onerror = done;
+        tx.onabort = done;
+      } catch {
+        done();
+      }
+    });
+  }
+
+  async getAllSummaries() {
+    const map = new Map();
+    const db = await this.open();
+    if (!db || (db.objectStoreNames && !db.objectStoreNames.contains?.(IDB_SUMMARY_STORE))) return map;
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        resolve(map);
+      };
+      try {
+        const tx = db.transaction(IDB_SUMMARY_STORE, 'readonly');
+        const store = tx.objectStore(IDB_SUMMARY_STORE);
+        if (typeof store.getAll !== 'function') {
+          done();
+          return;
+        }
+        const req = store.getAll();
+        req.onsuccess = () => {
+          const rows = Array.isArray(req.result) ? req.result : [];
+          for (const rec of rows) {
+            if (
+              rec &&
+              rec.avatar &&
+              rec.schema === SUMMARY_SCHEMA_VERSION &&
+              Array.isArray(rec.summaries) &&
+              typeof rec.savedAt === 'number'
+            ) {
+              map.set(rec.avatar, { data: rec.summaries, fetchedAt: rec.savedAt });
+            }
+          }
+          done();
+        };
+        req.onerror = done;
+        tx.onerror = done;
+        tx.onabort = done;
+      } catch {
+        done();
+      }
+    });
+  }
+
+  async setSummaries(avatar, summaries) {
+    if (!avatar || !Array.isArray(summaries)) return false;
+    const db = await this.open();
+    if (!db || (db.objectStoreNames && !db.objectStoreNames.contains?.(IDB_SUMMARY_STORE))) return false;
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (ok) => {
+        if (settled) return;
+        settled = true;
+        resolve(ok);
+      };
+      try {
+        const tx = db.transaction(IDB_SUMMARY_STORE, 'readwrite');
+        tx.objectStore(IDB_SUMMARY_STORE).put({
+          avatar,
+          schema: SUMMARY_SCHEMA_VERSION,
+          summaries,
+          savedAt: Date.now(),
+        });
+        tx.oncomplete = () => done(true);
+        tx.onerror = () => done(false);
+        tx.onabort = () => done(false);
+      } catch {
+        done(false);
+      }
+    });
+  }
+
+  async deleteSummary(avatar) {
+    if (!avatar) return;
+    const db = await this.open();
+    if (!db || (db.objectStoreNames && !db.objectStoreNames.contains?.(IDB_SUMMARY_STORE))) return;
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      try {
+        const tx = db.transaction(IDB_SUMMARY_STORE, 'readwrite');
+        tx.objectStore(IDB_SUMMARY_STORE).delete(avatar);
         tx.oncomplete = done;
         tx.onerror = done;
         tx.onabort = done;
@@ -536,6 +642,7 @@ export class SaveManagerAdapter {
   constructor(options = {}) {
     this.digestCache = new IndexedDbDigestCache({ openTimeoutMs: options.idbOpenTimeoutMs });
     this.summaryCache = new Map();
+    this.summaryCacheHydrated = false;
     this.inFlightSummaries = new Map();
     this.lastKnownSummaries = new Map();
     this.dirtyDigestKeys = new Set();
@@ -574,6 +681,9 @@ export class SaveManagerAdapter {
     this.summaryRequestSeq.set(avatar, (this.summaryRequestSeq.get(avatar) || 0) + 1);
     this.summaryCache.delete(avatar);
     this.inFlightSummaries.delete(avatar);
+    if (typeof this.digestCache.deleteSummary === 'function') {
+      void this.digestCache.deleteSummary(avatar);
+    }
   }
 
   invalidateChatCache(avatar, chatId) {
@@ -581,6 +691,9 @@ export class SaveManagerAdapter {
     this.summaryRequestSeq.set(avatar, (this.summaryRequestSeq.get(avatar) || 0) + 1);
     this.summaryCache.delete(avatar);
     this.inFlightSummaries.delete(avatar);
+    if (typeof this.digestCache.deleteSummary === 'function') {
+      void this.digestCache.deleteSummary(avatar);
+    }
     const cleanChatId = stripJsonl(chatId || '');
     if (!cleanChatId) return;
     const cacheKey = `${avatar}::${cleanChatId}`;
@@ -992,6 +1105,9 @@ export class SaveManagerAdapter {
       if (this.summaryEpoch === epochBeforeFetch && this.summaryRequestSeq.get(character.avatar) === reqSeq) {
         this.summaryCache.set(character.avatar, { data: summaries, fetchedAt: Date.now() });
         this.lastKnownSummaries.set(character.avatar, summaries);
+        if (typeof this.digestCache.setSummaries === 'function') {
+          void this.digestCache.setSummaries(character.avatar, summaries);
+        }
       }
       return summaries;
     })().finally(() => {
@@ -1006,97 +1122,170 @@ export class SaveManagerAdapter {
   }
 
   /**
-   * 并发受限地加载全部角色的存档汇总统计（支持优先调度目标角色与增量回调，命中有效缓存的角色不发起网络请求）
+   * 首次冷启动时从 IndexedDB 恢复上次持久化的角色存档摘要，实现刷新页面/重启后秒开侧栏
+   */
+  async hydrateSummaryCacheFromPersistence() {
+    if (this.summaryCacheHydrated || !this.isSillyTavern()) return false;
+    this.summaryCacheHydrated = true;
+    if (typeof this.digestCache.getAllSummaries !== 'function') return false;
+
+    const epochBefore = this.summaryEpoch;
+    const persisted = await this.digestCache.getAllSummaries();
+    if (this.summaryEpoch !== epochBefore || !persisted || persisted.size === 0) return false;
+
+    const activeRef = this.getActiveCharacterChatRef();
+    const liveActiveChatByAvatar = new Map();
+    for (const ch of this.getCharacters()) {
+      if (ch?.avatar && ch.activeChatId) {
+        liveActiveChatByAvatar.set(ch.avatar, stripJsonl(ch.activeChatId));
+      }
+    }
+    let restoredAny = false;
+    for (const [avatar, rec] of persisted.entries()) {
+      if (!this.lastKnownSummaries.has(avatar)) {
+        this.lastKnownSummaries.set(avatar, rec.data);
+      }
+      // 当前活跃角色、本会话已失效过的角色，或宿主记录的最近聊天已不在持久化摘要里的角色仍走实时拉取
+      const alreadyInvalidated = (this.summaryRequestSeq.get(avatar) || 0) > 0;
+      const isCurrentActive = activeRef?.avatar === avatar;
+      const expectedChatId = liveActiveChatByAvatar.get(avatar) || '';
+      const activeChatMissing = Boolean(expectedChatId && !rec.data.some((s) => stripJsonl(s.chatId) === expectedChatId));
+      if (!alreadyInvalidated && !isCurrentActive && !activeChatMissing && !this.summaryCache.has(avatar)) {
+        this.summaryCache.set(avatar, rec);
+        restoredAny = true;
+      }
+    }
+    return restoredAny;
+  }
+
+  /**
+   * 若目标存档恰好是酒馆当前已在内存中加载的活跃对话（ctx.chat），直接零网络、零 JSONL 解析构建楼层摘要
+   */
+  getLiveActiveChatDigest(character, cleanChatId, expectedMessageCount = 0) {
+    const ctx = this.getContext();
+    if (!ctx || ctx.groupId || !Array.isArray(ctx.chat)) return null;
+    const activeRef = this.getActiveCharacterChatRef(ctx);
+    if (!activeRef || activeRef.avatar !== character.avatar || activeRef.chatId !== cleanChatId) return null;
+    // 若酒馆尚未完成聊天水合（内存为空但摘要宣称有消息），回退走接口拉取
+    if (ctx.chat.length === 0 && Number(expectedMessageCount || 0) > 0) return null;
+
+    const { floors } = compactChatLines(ctx.chat, { skipHeaderDetection: true });
+    const rawMeta = ctx.chatMetadata || ctx.chat_metadata || {};
+    const header = {
+      user_name: ctx.name1 || '',
+      character_name: character.name || ctx.name2 || '',
+      create_date: rawMeta.create_date || '',
+      chat_metadata: rawMeta,
+    };
+    return { header, floors };
+  }
+
+  /**
+   * 并发受限地加载全部角色的存档汇总统计（支持优先完成当前角色再扫后台，避免与首屏抢连接/I/O）
    */
   async loadGlobalOverview({
     forceRefresh = false,
     concurrency = 6,
     priorityAvatars = [],
     onCharacterLoaded = null,
+    onPriorityReady = null,
     onProgress = null,
   } = {}) {
     if (forceRefresh) {
       this.summaryEpoch += 1;
       this.summaryCache.clear();
       this.inFlightSummaries.clear();
+    } else {
+      await this.hydrateSummaryCacheFromPersistence();
     }
 
     const characters = this.getCharacters();
     const results = new Array(characters.length);
     const prioritySet = new Set(Array.isArray(priorityAvatars) ? priorityAvatars.filter(Boolean) : []);
-    const workOrder = [];
-    if (prioritySet.size > 0) {
-      for (let i = 0; i < characters.length; i += 1) {
-        if (prioritySet.has(characters[i]?.avatar)) workOrder.push(i);
-      }
-      for (let i = 0; i < characters.length; i += 1) {
-        if (!prioritySet.has(characters[i]?.avatar)) workOrder.push(i);
-      }
-    } else {
-      for (let i = 0; i < characters.length; i += 1) workOrder.push(i);
+    const priorityIndices = [];
+    const restIndices = [];
+    for (let i = 0; i < characters.length; i += 1) {
+      if (prioritySet.has(characters[i]?.avatar)) priorityIndices.push(i);
+      else restIndices.push(i);
     }
 
     let completed = 0;
+
+    const loadOne = async (index) => {
+      const ch = characters[index];
+      if (ch.avatar && ch.activeChatId && !this.lastKnownActiveChatByAvatar.has(ch.avatar)) {
+        this.lastKnownActiveChatByAvatar.set(ch.avatar, ch.activeChatId);
+      }
+      let summaries = [];
+      let summaryError = '';
+      try {
+        summaries = await this.getCharacterChatSummaries(ch, forceRefresh);
+      } catch (err) {
+        console.warn(`[SaveManager] 获取 ${ch.name} 存档失败:`, err);
+        summaryError = err?.message || String(err || '获取存档列表失败');
+        // 列表瞬态失败时保留上次成功拉取的存档摘要，不误清为“无存档”
+        const previous = this.lastKnownSummaries.get(ch.avatar);
+        if (Array.isArray(previous)) {
+          summaries = previous;
+        }
+      }
+
+      const allMeta = this.getAllMetadata();
+      let starredCount = 0;
+      let notedCount = 0;
+      let latestTime = 0;
+
+      const enrichedSaves = summaries.map((s) => {
+        const meta = this.getSaveMeta(ch.avatar, s.chatId, allMeta);
+        if (meta.starred) starredCount += 1;
+        if (meta.note || meta.tags.length > 0) notedCount += 1;
+        const ts = parseSillyTavernTimestamp(s.lastModified) || 0;
+        if (ts > latestTime) latestTime = ts;
+        return { ...s, meta };
+      });
+
+      const entry = {
+        ...ch,
+        saves: enrichedSaves,
+        saveCount: enrichedSaves.length,
+        starredCount,
+        notedCount,
+        latestTimestamp: latestTime,
+        summaryError,
+      };
+      results[index] = entry;
+
+      completed += 1;
+      if (typeof onCharacterLoaded === 'function') {
+        onCharacterLoaded(entry, index);
+      }
+      if (typeof onProgress === 'function') {
+        onProgress(completed, characters.length);
+      }
+      return entry;
+    };
+
+    // 第一阶段：先独享通道拉取并渲染优先角色（当前/上次选中），不与后台其余角色抢连接与磁盘 I/O
+    if (priorityIndices.length > 0) {
+      const priorityEntries = await Promise.all(priorityIndices.map((idx) => loadOne(idx)));
+      if (typeof onPriorityReady === 'function') {
+        await onPriorityReady(priorityEntries);
+      }
+    }
+
+    // 第二阶段：后台并发限流补齐其余角色
     let cursor = 0;
-
     const worker = async () => {
-      while (cursor < workOrder.length) {
-        const index = workOrder[cursor++];
-        const ch = characters[index];
-        if (ch.avatar && ch.activeChatId && !this.lastKnownActiveChatByAvatar.has(ch.avatar)) {
-          this.lastKnownActiveChatByAvatar.set(ch.avatar, ch.activeChatId);
-        }
-        let summaries = [];
-        let summaryError = '';
-        try {
-          summaries = await this.getCharacterChatSummaries(ch, forceRefresh);
-        } catch (err) {
-          console.warn(`[SaveManager] 获取 ${ch.name} 存档失败:`, err);
-          summaryError = err?.message || String(err || '获取存档列表失败');
-          // 列表瞬态失败时保留上次成功拉取的存档摘要，不误清为“无存档”
-          const previous = this.lastKnownSummaries.get(ch.avatar);
-          if (Array.isArray(previous)) {
-            summaries = previous;
-          }
-        }
-
-        const allMeta = this.getAllMetadata();
-        let starredCount = 0;
-        let notedCount = 0;
-        let latestTime = 0;
-
-        const enrichedSaves = summaries.map((s) => {
-          const meta = this.getSaveMeta(ch.avatar, s.chatId, allMeta);
-          if (meta.starred) starredCount += 1;
-          if (meta.note || meta.tags.length > 0) notedCount += 1;
-          const ts = parseSillyTavernTimestamp(s.lastModified) || 0;
-          if (ts > latestTime) latestTime = ts;
-          return { ...s, meta };
-        });
-
-        const entry = {
-          ...ch,
-          saves: enrichedSaves,
-          saveCount: enrichedSaves.length,
-          starredCount,
-          notedCount,
-          latestTimestamp: latestTime,
-          summaryError,
-        };
-        results[index] = entry;
-
-        completed += 1;
-        if (typeof onCharacterLoaded === 'function') {
-          onCharacterLoaded(entry, index);
-        }
-        if (typeof onProgress === 'function') {
-          onProgress(completed, characters.length);
-        }
+      while (cursor < restIndices.length) {
+        const index = restIndices[cursor++];
+        await loadOne(index);
       }
     };
 
-    const workers = Array.from({ length: Math.min(concurrency, Math.max(1, characters.length)) }, () => worker());
-    await Promise.all(workers);
+    if (restIndices.length > 0) {
+      const workers = Array.from({ length: Math.min(concurrency, restIndices.length) }, () => worker());
+      await Promise.all(workers);
+    }
     return results;
   }
 
@@ -1140,11 +1329,13 @@ export class SaveManagerAdapter {
       const sizeSig = summary.rawFileSize ?? summary.fileSize ?? '';
       const revSig = summary.hostRevision ?? '';
       // 注：TauriTavern 的 last_mes 通常取自末条有效 send_date；若对非活跃存档早期消息做等长编辑，
-      // 摘要指纹在 TTL 内可能不变，由 digestCacheTtlMs、活跃存档直通、事件监听与手动重扫共同兜底。
+      // 摘要指纹在 TTL 内可能不变，由 digestCacheTtlMs、活跃存档内存直读/直通、事件监听与手动重扫共同兜底。
       const fingerprint = `${DIGEST_SCHEMA_VERSION}|${summary.lastModified}|${sizeSig}|${summary.messageCount}|${previewSig}|${revSig}`;
       const isActiveChat =
         (characterActiveChatId && cleanChatId === characterActiveChatId) ||
         (liveActiveChatId && cleanChatId === liveActiveChatId);
+      const liveMemoryDigest =
+        !forceRefresh && isActiveChat ? this.getLiveActiveChatDigest(character, cleanChatId, summary.messageCount) : null;
       const shouldBypassCache = forceRefresh || isActiveChat || this.dirtyDigestKeys.has(cacheKey);
       return {
         idx,
@@ -1152,13 +1343,14 @@ export class SaveManagerAdapter {
         cleanChatId,
         cacheKey,
         fingerprint,
+        liveMemoryDigest,
         shouldBypassCache,
         seqBeforeBatch: this.digestRequestSeq.get(cacheKey) || 0,
       };
     });
 
     // 温热 IndexedDB 缓存按批在共享只读事务中一次性读取，减少大存档角色重开时的事务开销
-    const cacheEligible = items.filter((item) => !item.shouldBypassCache);
+    const cacheEligible = items.filter((item) => !item.shouldBypassCache && !item.liveMemoryDigest);
     const batchEpoch = this.digestEpoch;
     let cachedByKey = new Map();
     if (cacheEligible.length > 0) {
@@ -1182,9 +1374,23 @@ export class SaveManagerAdapter {
 
     const digests = new Array(summaries.length);
     const toFetch = [];
-    const hitMetaSnapshot = cachedByKey.size > 0 ? this.getAllMetadata() : null;
+    const hasImmediateHits = cachedByKey.size > 0 || items.some((it) => it.liveMemoryDigest);
+    const hitMetaSnapshot = hasImmediateHits ? this.getAllMetadata() : null;
 
     for (const item of items) {
+      if (item.liveMemoryDigest) {
+        const memDigest = item.liveMemoryDigest;
+        digests[item.idx] = {
+          ...item.summary,
+          meta: this.getSaveMeta(character.avatar, item.cleanChatId, hitMetaSnapshot),
+          header: memDigest.header,
+          floors: memDigest.floors,
+          digestStatus: 'ok',
+          digestError: '',
+          messageCount: memDigest.floors.length,
+        };
+        continue;
+      }
       const hit = cachedByKey.get(item.cacheKey) || null;
       const stillValidHit =
         hit &&
