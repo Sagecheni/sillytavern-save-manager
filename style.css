@@ -681,6 +681,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 0 14px;
+  color: var(--sbm-text-2);
   color: color-mix(in srgb, var(--sbm-text) 76%, transparent);
   font-size: 14px;
   font-variant-numeric: tabular-nums;
@@ -1009,11 +1010,11 @@
 .st-sbm-toast {
   position: fixed;
   z-index: 10001;
-  left: 0;
-  right: 0;
-  top: 24px;
+  left: env(safe-area-inset-left, 0px);
+  right: env(safe-area-inset-right, 0px);
+  top: calc(24px + env(safe-area-inset-top, 0px));
   width: fit-content;
-  max-width: min(420px, calc(100vw - 32px));
+  max-width: min(420px, calc(100vw - 32px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
   margin: 0 auto;
   padding: 12px 22px;
   box-sizing: border-box;
@@ -1027,6 +1028,72 @@
   text-align: center;
   pointer-events: none;
   animation: stSbmRise 0.3s var(--sbm-ease);
+}
+
+.st-sbm-toast[data-host="tauritavern"] {
+  left: 0;
+  right: 0;
+  top: 24px;
+  max-width: min(420px, calc(100vw - 32px));
+}
+
+.st-sbm-summary-error {
+  margin: 0 2px 10px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-radius: 14px;
+  background: var(--sbm-fill);
+  color: var(--sbm-text-2);
+  font-size: 13px;
+}
+
+.st-sbm-unavailable {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 0.5px solid var(--sbm-line);
+}
+
+.st-sbm-unavailable-head {
+  padding: 0 14px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sbm-text-3);
+}
+
+.st-sbm-row.is-unavailable {
+  opacity: 0.72;
+}
+
+.st-sbm-row-badge.is-error {
+  flex: none;
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ff6961;
+}
+
+.st-sbm-backdrop[data-theme="light"] .st-sbm-row-badge.is-error {
+  color: #d70015;
+}
+
+.st-sbm-unavailable-banner {
+  margin-top: 22px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--sbm-fill);
+  color: var(--sbm-text-2);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.st-sbm-window .st-sbm-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 
 /* --------------------------------------------------------------------------
@@ -1077,7 +1144,9 @@
     display: block;
     border-radius: 0;
     padding-top: env(safe-area-inset-top);
+    padding-right: env(safe-area-inset-right);
     padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
   }
 
   .st-sbm-sidebar,
@@ -1127,9 +1196,18 @@
 
   .st-sbm-window .st-sbm-close {
     top: calc(16px + env(safe-area-inset-top));
-    right: 16px;
+    right: calc(16px + env(safe-area-inset-right));
     width: 36px;
     height: 36px;
+  }
+
+  .st-sbm-backdrop[data-host="tauritavern"] .st-sbm-window {
+    padding: 0;
+  }
+
+  .st-sbm-backdrop[data-host="tauritavern"] .st-sbm-window .st-sbm-close {
+    top: 16px;
+    right: 16px;
   }
 
   .st-sbm-saves-head {

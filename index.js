@@ -27,6 +27,12 @@ function mountExtensionMenuButton() {
       <span>存档与分支</span>
     `;
     item.addEventListener('click', () => modal.open());
+    item.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        modal.open();
+      }
+    });
     extensionsMenu.appendChild(item);
   }
 }
@@ -104,36 +110,80 @@ function mountAllIntegrations() {
   registerSlashCommands();
 }
 
-function initExtension() {
-  modal.mount();
-  mountAllIntegrations();
-  adapter.bindSillyTavernEvents();
+let extensionInitialized = false;
+let initInFlight = null;
+let lifecycleListenersBound = false;
 
-  // 兼容酒馆异步初始化：在 APP_READY 时补挂载一次，防止远程/慢速网络下菜单容器晚于扩展渲染
+function attachHostLifecycleListeners() {
+  if (lifecycleListenersBound) return;
   const ctx = adapter.getContext();
-  if (ctx?.eventSource && ctx?.event_types?.APP_READY) {
-    ctx.eventSource.on(ctx.event_types.APP_READY, () => {
-      mountAllIntegrations();
-      adapter.bindSillyTavernEvents();
-    });
-  }
+  const eventTypes = ctx?.eventTypes || ctx?.event_types;
+  if (!ctx?.eventSource || typeof ctx.eventSource.on !== 'function' || !eventTypes) return;
 
-  // 暴露全局句柄便于调试与外部脚本联动
-  window.STSaveBranchManager = {
-    adapter,
-    modal,
-    open: () => modal.open(),
-    close: () => modal.close(),
+  const onHostReadyEvent = () => {
+    if (!extensionInitialized) {
+      void initExtension().catch((err) => {
+        console.error('[SaveManager] 宿主事件恢复初始化失败:', err);
+      });
+      return;
+    }
+    mountAllIntegrations();
+    adapter.bindSillyTavernEvents();
+    modal.installTauriBackHandler?.();
   };
+
+  const readyEvents = Array.from(new Set([eventTypes.APP_READY, eventTypes.EXTENSION_SETTINGS_LOADED].filter(Boolean)));
+  for (const evt of readyEvents) {
+    ctx.eventSource.on(evt, onHostReadyEvent);
+  }
+  if (readyEvents.length > 0) {
+    lifecycleListenersBound = true;
+  }
+}
+
+function initExtension() {
+  // 独立于首次启动成功与否预先挂载生命周期恢复监听，以便首次 ready 拒绝后宿主补发 APP_READY 时可自动恢复
+  attachHostLifecycleListeners();
+  if (extensionInitialized) return Promise.resolve();
+  if (initInFlight) return initInFlight;
+
+  initInFlight = (async () => {
+    // 在 TauriTavern 环境中等待宿主内核与拦截路由就绪；若宿主就绪失败则向上传播，不挂载半残入口
+    await adapter.waitForHostReady();
+
+    modal.mount();
+    mountAllIntegrations();
+    adapter.bindSillyTavernEvents();
+    attachHostLifecycleListeners();
+
+    // 暴露全局句柄便于调试与外部脚本联动
+    window.STSaveBranchManager = {
+      adapter,
+      modal,
+      open: () => modal.open(),
+      close: () => modal.close(),
+    };
+
+    extensionInitialized = true;
+  })().finally(() => {
+    initInFlight = null;
+  });
+
+  return initInFlight;
 }
 
 if (typeof window !== 'undefined') {
+  const start = () => {
+    void initExtension().catch((err) => {
+      console.error('[SaveManager] 初始化失败:', err);
+    });
+  };
   if (window.jQuery) {
-    window.jQuery(() => initExtension());
+    window.jQuery(start);
   } else if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initExtension);
+    document.addEventListener('DOMContentLoaded', start);
   } else {
-    initExtension();
+    start();
   }
 }
 

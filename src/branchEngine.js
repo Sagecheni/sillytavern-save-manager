@@ -147,51 +147,110 @@ function settleForkOwners(orderedNodes, nodeById) {
 export function buildCharacterBranchGraph(character, rawDigests = []) {
   const nodes = rawDigests.map((d) => {
     const chatId = stripJsonl(d.chatId || d.fileName);
-    const floors = Array.isArray(d.floors) ? d.floors : [];
+    const digestStatus = d.digestStatus || 'ok';
+    const isUnavailable = digestStatus !== 'ok';
+    const digestError = d.digestError || '';
+    const floors = !isUnavailable && Array.isArray(d.floors) ? d.floors : [];
     const lastFloor = floors[floors.length - 1] || null;
+    const unavailableFallback = digestStatus === 'missing' ? '存档文件缺失' : '存档损坏或无法读取';
     return {
       ...d,
       chatId,
+      digestStatus,
+      digestError,
+      isUnavailable,
       floors,
-      floorCount: floors.length || d.messageCount || 0,
+      floorCount: isUnavailable ? 0 : floors.length || d.messageCount || 0,
       isActive: Boolean(character?.isCurrentCharacter && stripJsonl(character?.activeChatId) === chatId),
       isCharacterLastChat: stripJsonl(character?.activeChatId) === chatId,
-      lastFloorSnippet: lastFloor?.snippet || d.previewText || '暂无聊天消息',
+      lastFloorSnippet: isUnavailable ? digestError || unavailableFallback : lastFloor?.snippet || d.previewText || '暂无聊天消息',
       _createdTime: parseSaveCreatedTime(d),
       parentId: null,
       childrenIds: [],
       branchMoment: null,
-      row: 0,
-      lane: 0,
+      row: isUnavailable ? -1 : 0,
+      lane: isUnavailable ? -1 : 0,
     };
   });
 
-  const nodeById = new Map(nodes.map((n) => [n.chatId, n]));
+  const validNodes = nodes.filter((n) => !n.isUnavailable);
+  const unavailableNodes = nodes
+    .filter((n) => n.isUnavailable)
+    .sort((a, b) => (parseSillyTavernTimestamp(b.lastModified) || 0) - (parseSillyTavernTimestamp(a.lastModified) || 0));
+
+  const nodeById = new Map(validNodes.map((n) => [n.chatId, n]));
   // 按创建时间与 chatId 稳定排序，确保无论后端返回顺序如何，推导出的树结构完全一致
-  const orderedNodes = [...nodes].sort((a, b) => {
+  const orderedNodes = [...validNodes].sort((a, b) => {
     if (a._createdTime !== b._createdTime) return a._createdTime - b._createdTime;
     return a.chatId.localeCompare(b.chatId);
   });
+
+  // 预先构建显式父子索引（main_chat / bookmark_link）与前两楼签名分桶，减少无谓的 O(N^2) 扫描
+  const mainChatById = new Map();
+  const bookmarkParentsByChild = new Map();
+  const twoFloorBuckets = new Map();
+
+  for (const node of orderedNodes) {
+    const mainId = stripJsonl(node.header?.chat_metadata?.main_chat || '');
+    mainChatById.set(node.chatId, mainId);
+    if (!mainId && node.floors.length > 0) {
+      for (const floor of node.floors) {
+        const target = floor.bookmarkLink ? stripJsonl(floor.bookmarkLink) : '';
+        if (!target || target === node.chatId) continue;
+        let set = bookmarkParentsByChild.get(target);
+        if (!set) {
+          set = new Set();
+          bookmarkParentsByChild.set(target, set);
+        }
+        set.add(node);
+      }
+    }
+    if (node.floors.length >= 2) {
+      const bucketKey = `${node.floors[0].hash}|${node.floors[1].hash}`;
+      let bucket = twoFloorBuckets.get(bucketKey);
+      if (!bucket) {
+        bucket = [];
+        twoFloorBuckets.set(bucketKey, bucket);
+      }
+      bucket.push(node);
+    }
+  }
 
   // 第一步（阶段 A）：优先建立所有酒馆原生显式父子关系（main_chat / bookmark_link），防止后续推断产生环路时误删原生关系
   for (const child of orderedNodes) {
     if (child.floors.length === 0) continue;
 
+    const childMain = mainChatById.get(child.chatId) || '';
+    const candidates = [];
+    if (childMain) {
+      const targetParent = nodeById.get(childMain);
+      if (targetParent && targetParent.chatId !== child.chatId && targetParent.floors.length > 0) {
+        candidates.push(targetParent);
+      }
+    } else {
+      const bookmarkParents = bookmarkParentsByChild.get(child.chatId);
+      if (bookmarkParents) {
+        for (const candidate of bookmarkParents) {
+          if (candidate.chatId !== child.chatId && candidate.floors.length > 0) {
+            candidates.push(candidate);
+          }
+        }
+      }
+    }
+
     let bestParent = null;
     let bestLcp = 0;
 
-    for (const candidate of orderedNodes) {
-      if (candidate.chatId === child.chatId || candidate.floors.length === 0) continue;
+    for (const candidate of candidates) {
       if (getExplicitParentRelation(candidate, child) !== 1) continue;
 
       const lcp = computeLcpFloors(candidate.floors, child.floors);
       if (lcp < 1) continue;
+      if (!isBetterParentCandidate(candidate, lcp, true, bestParent, bestLcp, true)) continue;
       if (wouldCreateCycle(child.chatId, candidate.chatId, nodeById)) continue;
 
-      if (isBetterParentCandidate(candidate, lcp, true, bestParent, bestLcp, true)) {
-        bestParent = candidate;
-        bestLcp = lcp;
-      }
+      bestParent = candidate;
+      bestLcp = lcp;
     }
 
     if (bestParent && bestLcp >= 1) {
@@ -200,27 +259,30 @@ export function buildCharacterBranchGraph(character, rawDigests = []) {
     }
   }
 
-  // 第一步（阶段 B）：为尚未确立显式父节点的存档补充不会成环的 LCP 推断关系
+  // 第一步（阶段 B）：按前两楼签名分桶，为尚未确立显式父节点的存档补充不会成环的 LCP 推断关系
   for (const child of orderedNodes) {
-    if (child.parentId || child.floors.length === 0) continue;
+    if (child.parentId || child.floors.length < 2) continue;
+
+    const bucketKey = `${child.floors[0].hash}|${child.floors[1].hash}`;
+    const bucket = twoFloorBuckets.get(bucketKey);
+    if (!bucket || bucket.length < 2) continue;
 
     let bestParent = null;
     let bestLcp = 0;
 
-    for (const candidate of orderedNodes) {
-      if (candidate.chatId === child.chatId || candidate.floors.length === 0) continue;
+    for (const candidate of bucket) {
+      if (candidate.chatId === child.chatId) continue;
 
       const lcp = computeLcpFloors(candidate.floors, child.floors);
       // 同一张角色卡的独立新聊天默认共用第 1 楼开场白；无显式 main_chat / bookmark_link 时要求至少共享 2 楼才视为分叉
       if (lcp < 2) continue;
       if (!isUpstreamCandidate(candidate, child, lcp)) continue;
+      if (!isBetterParentCandidate(candidate, lcp, false, bestParent, bestLcp, false)) continue;
       // 嵌套检查点（主线 -> 外层检查点 -> 内层检查点）下，禁止将主线反向挂到后代检查点之下成环
       if (wouldCreateCycle(child.chatId, candidate.chatId, nodeById)) continue;
 
-      if (isBetterParentCandidate(candidate, lcp, false, bestParent, bestLcp, false)) {
-        bestParent = candidate;
-        bestLcp = lcp;
-      }
+      bestParent = candidate;
+      bestLcp = lcp;
     }
 
     if (bestParent && bestLcp >= 2) {
@@ -229,19 +291,35 @@ export function buildCharacterBranchGraph(character, rawDigests = []) {
     }
   }
 
-  // 第二步：兜底环路安全防护（正常情况下阶段 A/B 已保证无环）
+  // 第二步：线性 O(N) 整林兜底环路安全防护（0=未访问, 1=当前路径中, 2=已确认无环）
+  const visitState = new Map();
   for (const node of orderedNodes) {
-    const visited = new Set([node.chatId]);
+    if (visitState.get(node.chatId) === 2) continue;
+    const trail = [];
     let cursor = node;
-    while (cursor.parentId) {
-      if (visited.has(cursor.parentId)) {
+    while (cursor && cursor.parentId) {
+      const state = visitState.get(cursor.chatId) || 0;
+      if (state === 2) break;
+      if (state === 1) {
         cursor.parentId = null;
         cursor._lcpWithParent = 0;
         break;
       }
-      visited.add(cursor.parentId);
-      cursor = nodeById.get(cursor.parentId) || { parentId: null };
+      visitState.set(cursor.chatId, 1);
+      trail.push(cursor);
+      const next = nodeById.get(cursor.parentId);
+      if (!next) break;
+      if (visitState.get(next.chatId) === 1) {
+        cursor.parentId = null;
+        cursor._lcpWithParent = 0;
+        break;
+      }
+      cursor = next;
     }
+    for (const visitedNode of trail) {
+      visitState.set(visitedNode.chatId, 2);
+    }
+    if (cursor) visitState.set(cursor.chatId, 2);
   }
 
   // 第二步（补）：main_chat 记录的是「点分支按钮时所在的文件」，不是剧情真正岔开的位置。
@@ -250,7 +328,7 @@ export function buildCharacterBranchGraph(character, rawDigests = []) {
   settleForkOwners(orderedNodes, nodeById);
 
   // 第三步：填充 childrenIds 与详尽的 branchMoment（分叉时刻对比信息）
-  for (const node of nodes) {
+  for (const node of validNodes) {
     if (!node.parentId) continue;
     const parent = nodeById.get(node.parentId);
     if (!parent) {
@@ -281,7 +359,7 @@ export function buildCharacterBranchGraph(character, rawDigests = []) {
   }
 
   // 对每个父节点的子分支按分叉楼层升序、创建时间升序排列，保证视觉从上到下符合剧情顺序
-  for (const node of nodes) {
+  for (const node of validNodes) {
     node.childrenIds.sort((idA, idB) => {
       const a = nodeById.get(idA);
       const b = nodeById.get(idB);
@@ -291,8 +369,8 @@ export function buildCharacterBranchGraph(character, rawDigests = []) {
     });
   }
 
-  // 第四步：找出所有根节点（独立开场白 / 主干起点），按最近活跃或创建时间排列
-  const roots = nodes
+  // 第四步：找出所有根节点（独立开场白 / 主干起点；缺失或损坏存档不进入谱系根节点）
+  const roots = validNodes
     .filter((n) => !n.parentId)
     .sort((a, b) => a._createdTime - b._createdTime);
 
@@ -301,10 +379,12 @@ export function buildCharacterBranchGraph(character, rawDigests = []) {
 
   return {
     nodes,
+    validNodes,
+    unavailableNodes,
     roots,
     order,
     laneCount,
-    branchCount: nodes.filter((n) => Boolean(n.parentId)).length,
+    branchCount: validNodes.filter((n) => Boolean(n.parentId)).length,
     rootCount: roots.length,
   };
 }
